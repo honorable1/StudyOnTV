@@ -9,55 +9,17 @@ import org.json.JSONObject
 import java.util.Calendar
 import java.util.UUID
 
-class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", null, 5) {
+class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", null, StoreSchema.VERSION) {
     companion object {
         val DEFAULT_PRAISE = listOf("太棒了！", "答对啦！", "完全正确！", "真厉害！", "好样的，继续保持！", "漂亮！你越来越熟练了")
         val DEFAULT_ENCOURAGE = listOf("没关系，记住正确答案就好", "差一点点，下一题加油！", "错误也是学习的一部分", "别灰心，再接再厉！")
     }
 
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE questions(id TEXT PRIMARY KEY, subject TEXT, level TEXT, difficulty INTEGER, stem TEXT NOT NULL, options TEXT NOT NULL, answer INTEGER NOT NULL, tip TEXT, enabled INTEGER DEFAULT 1, created_at INTEGER, details TEXT)")
-        db.execSQL("CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT)")
-        db.execSQL("CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, payload TEXT, ts INTEGER)")
-        db.execSQL("CREATE INDEX idx_events_ts ON events(ts)")
-        createReviews(db)
-        createProgress(db)
-    }
+    // 表结构与迁移都在 StoreSchema 里，这里只做转发
+    override fun onCreate(db: SQLiteDatabase) = StoreSchema.onCreate(db)
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion < 2) db.execSQL("ALTER TABLE questions ADD COLUMN details TEXT")
-        if (oldVersion < 3) createReviews(db)
-        if (oldVersion < 4) createProgress(db)
-        if (oldVersion < 5) compactUsage(db)
-    }
-
-    /**
-     * 旧版本每秒写一条 usage 事件，一天可达上万行，导致 /api/state、成长记录越来越慢（Issue #2：后台加载卡）。
-     * 升级时按小时合并成一条。
-     */
-    private fun compactUsage(db: SQLiteDatabase) {
-        val buckets = LinkedHashMap<Long, Long>()
-        db.rawQuery("SELECT payload,ts FROM events WHERE type='usage'", null).use { c ->
-            while (c.moveToNext()) {
-                val ms = try { JSONObject(c.getString(0)).optLong("milliseconds") } catch (_: Exception) { 0L }
-                val hour = c.getLong(1) / 3600000 * 3600000
-                buckets[hour] = (buckets[hour] ?: 0L) + ms
-            }
-        }
-        db.beginTransaction()
-        try {
-            db.execSQL("DELETE FROM events WHERE type='usage'")
-            buckets.forEach { (hour, ms) ->
-                if (ms > 0) db.execSQL("INSERT INTO events(type,payload,ts) VALUES(?,?,?)", arrayOf<Any?>("usage", JSONObject().put("milliseconds", ms).toString(), hour))
-            }
-            db.setTransactionSuccessful()
-        } finally { db.endTransaction() }
-    }
-
-    private fun createProgress(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE question_progress(qid TEXT PRIMARY KEY, repetitions INTEGER NOT NULL, interval_days INTEGER NOT NULL, ease REAL NOT NULL, due_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
-        db.execSQL("CREATE INDEX idx_question_due ON question_progress(due_at)")
-    }
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) =
+        StoreSchema.onUpgrade(db, oldVersion, newVersion)
 
     fun recordProgress(id: String, quality: Int) {
         var repetitions = 0
@@ -83,10 +45,6 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
     fun repetitionStats(): JSONObject = readableDatabase.rawQuery(
         "SELECT COUNT(*),SUM(CASE WHEN due_at<=? THEN 1 ELSE 0 END) FROM question_progress JOIN questions ON questions.id=question_progress.qid WHERE questions.enabled=1", arrayOf(System.currentTimeMillis().toString())
     ).use { if (it.moveToFirst()) JSONObject().put("studied", it.getInt(0)).put("due", it.getInt(1)) else JSONObject().put("studied", 0).put("due", 0) }
-
-    private fun createReviews(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE reviews(id TEXT PRIMARY KEY, nonce TEXT UNIQUE, state TEXT NOT NULL, payload TEXT NOT NULL, ts INTEGER NOT NULL)")
-    }
 
     fun saveReview(value: JSONObject) {
         writableDatabase.insertWithOnConflict("reviews", null, ContentValues().apply {
@@ -176,50 +134,17 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
         if (!validEnd) defaults.put("windowEnd", "20:00")
         if (!saved.has("allDay") && validStart && validEnd && saved.optString("windowStart") == saved.optString("windowEnd")) defaults.put("allDay", true)
         // 旧版的单个时段自动迁移成一周七天；新版按 30 分钟格子保存
-        val migrated = normalizeWeek(saved.optJSONArray("weekSlots"))
+        val migrated = WeekSlots.normalize(saved.optJSONArray("weekSlots"))
             ?: if (saved.has("allDay") || saved.has("windowStart") || saved.has("windowEnd")) {
                 val oldDefault = !defaults.optBoolean("allDay") &&
                     defaults.optString("windowStart") == "18:30" && defaults.optString("windowEnd") == "20:00"
-                if (oldDefault) { defaults.put("allDay", true); fullWeek() }
-                else weekFromWindow(defaults.optBoolean("allDay"), defaults.optString("windowStart"), defaults.optString("windowEnd"))
-            } else fullWeek()
+                if (oldDefault) { defaults.put("allDay", true); WeekSlots.fullWeek() }
+                else WeekSlots.fromWindow(defaults.optBoolean("allDay"), defaults.optString("windowStart"), defaults.optString("windowEnd"))
+            } else WeekSlots.fullWeek()
         defaults.put("weekSlots", migrated)
         // 只修正非法值，不要顺带清空家长配置的答题范围（历史上这里是一行链式调用，会误清空）
         if (defaults.optString("holidayMode") !in listOf("sunday", "normal")) defaults.put("holidayMode", "sunday")
         return defaults
-    }
-
-    private fun weekFromWindow(allDay: Boolean, start: String, end: String): JSONArray {
-        fun minutes(value: String): Int? = try { value.split(":").let { it[0].toInt() * 60 + it[1].toInt() } } catch (_: Exception) { null }
-        val from = minutes(start) ?: 18 * 60 + 30
-        val to = minutes(end) ?: 20 * 60
-        val chars = CharArray(48) { index ->
-            val minute = index * 30
-            val on = allDay || if (from < to) minute in from until to else minute >= from || minute < to
-            if (on) '1' else '0'
-        }
-        val day = String(chars)
-        return JSONArray().apply { repeat(7) { put(day) } }
-    }
-
-    private fun fullWeek(): JSONArray = JSONArray().apply { repeat(7) { put("1".repeat(48)) } }
-
-    /** 旧版默认周末时段，仅用于迁移判断 */
-    private fun weekendDefault(): JSONArray {
-        val empty = "0".repeat(48)
-        val weekend = weekFromWindow(false, "09:00", "20:00").optString(0)
-        return JSONArray().apply { repeat(5) { put(empty) }; put(weekend); put(weekend) }
-    }
-
-    private fun normalizeWeek(raw: JSONArray?): JSONArray? {
-        if (raw == null || raw.length() != 7) return null
-        val out = JSONArray()
-        for (i in 0 until 7) {
-            val day = raw.optString(i)
-            if (day.length != 48 || day.any { it != '0' && it != '1' }) return null
-            out.put(day)
-        }
-        return out
     }
 
     fun saveConfig(input: JSONObject): JSONObject {
@@ -278,7 +203,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
             next.put(key, clean)
         }
         if (input.has("weekSlots")) {
-            val clean = normalizeWeek(input.optJSONArray("weekSlots")) ?: throw IllegalArgumentException("可用时段格式不正确")
+            val clean = WeekSlots.normalize(input.optJSONArray("weekSlots")) ?: throw IllegalArgumentException("可用时段格式不正确")
             // 七天全关等于设备永久不可用，前端会显示"暂无可用时段"，几乎总是误操作
             require(next.optBoolean("allDay") || (0 until 7).any { clean.optString(it).contains('1') }) {
                 "可用时段不能全部关闭；需要临时停用请用「暂停使用」"
