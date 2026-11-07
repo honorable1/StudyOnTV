@@ -156,6 +156,7 @@ class LanServer(
         val deviceAccess = trusted || (local && headers["x-device-token"] == AdminAuth.deviceToken)
         val token = headers["authorization"]?.removePrefix("Bearer ") ?: headers["x-admin-token"]
 
+        // ---------- 登录：不需要令牌 ----------
         if (path == "/api/auth/challenge" && method == "GET") {
             // 一次性随机数：客户端用 HMAC 回应，密码本身不上网
             val challenge = AdminAuth.challenge(context, ip)
@@ -163,7 +164,7 @@ class LanServer(
             return json(out, 200, challenge)
         }
         if (path == "/api/auth" && method == "POST") {
-            val input = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+            val input = jsonObject(body)
             val remember = input.optBoolean("remember")
             val session = AdminAuth.login(context,
                 input.optString("passphrase").takeIf { it.isNotEmpty() },
@@ -176,240 +177,40 @@ class LanServer(
             }
             return json(out, 200, JSONObject().put("token", session).put("expiresIn", if (remember) 30 * 86400 else 43200))
         }
+
+        // ---------- 其余 /api/* 统一鉴权 ----------
+        var parent = false
+        var integration: IntegrationAuth.Scope? = null
         if (path.startsWith("/api/") && path != "/api/hello") {
             val integrationToken = token?.takeIf { it.startsWith("sotv_") }
             if (integrationToken != null && !IntegrationAuth.takeBudget())
                 return json(out, 429, err("too_many_requests").put("message", "请求太频繁，请稍后再试"))
-            val integration = IntegrationAuth.verify(context, integrationToken)
+            integration = IntegrationAuth.verify(context, integrationToken)
             // 只有会话令牌（/api/auth 换取，且与来源地址绑定）；明文密码不再作为凭据使用
-            val parent = AdminAuth.valid(token, ip)
+            parent = AdminAuth.valid(token, ip)
             if (!deviceAccess && !parent && integration == null) return json(out, 401, err("unauthorized"))
             // 集成令牌只能访问明确列出的接口；不能改规则、题库、密码或权限本身。
-            if (integration != null && !deviceAccess && !parent) {
+            val grant = integration
+            if (grant != null && !deviceAccess && !parent) {
                 val scope = when {
                     path == "/api/state" && method == "GET" -> "read"
                     path == "/api/device" && method == "GET" -> "read"
                     path == "/api/remote" && method == "POST" -> "control"
                     else -> null
                 } ?: return json(out, 403, err("forbidden").put("message", "这个接口需要家长登录"))
-                if ((scope == "read" && !integration.read) || (scope == "control" && !integration.control))
+                if ((scope == "read" && !grant.read) || (scope == "control" && !grant.control))
                     return json(out, 403, err("forbidden").put("message", "集成令牌没有这个权限"))
             }
         }
 
         if (method != "GET") Diag.info("HTTP", "$method $path")
+        val req = Req(method, path, q, body, out, deviceAccess, parent, integration, ip, token)
         try {
-        when {
-            path == "/api/hello" && method == "GET" -> {
-                val info = JSONObject()
-                    .put("app", "StudyOnTV")
-                    .put("version", BuildConfig.VERSION_NAME)
-                    .put("name", Prefs.deviceName(context))
-                    .put("ip", localIp() ?: "")
-                    .put("port", boundPort)
-                    .put("questions", store.countQuestions())
-                    .put("needsToken", true)
-                    .put("passwordRequired", true)
-                return json(out, 200, info)
-            }
-            path == "/api/state" && method == "GET" -> {
-                DeviceRuntime.learning.flushUsage()
-                return json(out, 200, JSONObject()
-                    .put("config", store.config())
-                    .put("today", store.todayStats())
-                    .put("questions", store.countQuestions())
-                        .put("roundsDoneToday", store.roundsDoneToday())
-                        .put("repetition", store.repetitionStats())
-                        .put("learning", DeviceRuntime.learning.status()))
-            }
-            path == "/api/holidays" && method == "GET" -> return json(out, 200, HolidayService.info(context))
-            path == "/api/holidays/sync" && method == "POST" -> {
-                val year = query.split("&").mapNotNull { part -> part.split("=").takeIf { it.size == 2 && it[0] == "year" }?.get(1)?.toIntOrNull() }.firstOrNull()
-                    ?: java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
-                return try {
-                    json(out, 200, HolidayService.fetch(context, year))
-                } catch (e: Exception) {
-                    json(out, 200, err("holiday_failed").put("message", e.message ?: "节假日同步失败"))
-                }
-            }
-            path == "/api/config" && method == "PUT" -> {
-                val input = try { JSONObject(body) } catch (e: Exception) { return json(out, 200, err("bad_json")) }
-                return json(out, 200, JSONObject().put("config", store.saveConfig(input)))
-            }
-            path == "/api/questions/generate" && method == "POST" -> {
-                val input = try { JSONObject(body.ifEmpty { "{}" }) } catch (e: Exception) { return json(out, 200, err("bad_json")) }
-                return try {
-                    json(out, 200, GradingService.generateQuestions(store, input))
-                } catch (e: Exception) {
-                    json(out, 200, err("generate_failed").put("message", e.message ?: "生成失败，请稍后重试"))
-                }
-            }
-            path == "/api/questions" && method == "GET" -> {
-                val all = q["all"] == "1"
-                val items = store.questions(q["subject"], q["level"], q["limit"]?.toIntOrNull() ?: 500,
-                    enabledOnly = !all, sortBy = q["sort"] ?: "random")
-                return json(out, 200, JSONObject().put("items", items))
-            }
-            path == "/api/questions/pause" && method == "POST" -> {
-                val ids = JSONObject(body).getJSONArray("ids")
-                val enabled = JSONObject(body).optBoolean("enabled", false)
-                require(ids.length() in 1..5000) { "请选择题目" }
-                return json(out, 200, JSONObject().put("ok", true).put("updated",
-                    store.setEnabled((0 until ids.length()).map { ids.getString(it) }, enabled)))
-            }
-            path == "/api/questions" && method == "POST" -> {
-                val payload = try { JSONObject(body) } catch (e: Exception) { return json(out, 200, err("bad_json")) }
-                if (payload.has("items")) {
-                    val added = store.importQuestions(payload.getJSONArray("items"))
-                    return json(out, 200, JSONObject().put("ok", true).put("added", added))
-                }
-                return try {
-                    val id = store.upsertQuestion(payload)
-                    store.logEvent("question_added", JSONObject().put("id", id))
-                    json(out, 200, JSONObject().put("ok", true).put("id", id))
-                } catch (e: IllegalArgumentException) {
-                    json(out, 200, JSONObject().put("error", "bad_question").put("message", e.message ?: ""))
-                }
-            }
-            path == "/api/questions/delete" && method == "POST" -> {
-                val ids = JSONObject(body).getJSONArray("ids")
-                require(ids.length() in 1..5000) { "请选择要删除的题目" }
-                return json(out, 200, JSONObject().put("ok", true).put("deleted", store.deleteQuestions((0 until ids.length()).map { ids.getString(it) })))
-            }
-            path.startsWith("/api/questions/") && method == "DELETE" -> {
-                val id = path.removePrefix("/api/questions/")
-                return json(out, 200, JSONObject().put("ok", store.deleteQuestion(id)))
-            }
-            path == "/api/history" && method == "GET" -> {
-                DeviceRuntime.learning.flushUsage()
-                val days = Regex("days=(\\d+)").find(query)?.groupValues?.get(1)?.toIntOrNull() ?: 7
-                return json(out, 200, JSONObject().put("items", store.historyDays(days)))
-            }
-            path == "/api/events" && method == "GET" -> {
-                return json(out, 200, JSONObject().put("items", store.recentEvents(q["limit"]?.toIntOrNull() ?: 50)))
-            }
-            path == "/api/grading" && method == "GET" -> return json(out, 200, GradingService.settings(store).put("providers", GradingService.providers()))
-            path == "/api/grading/test" && method == "POST" -> return json(out, 200, GradingService.test(store, JSONObject(body.ifEmpty { "{}" })))
-            path == "/api/grading/models" && method == "POST" -> return json(out, 200, GradingService.models(store, JSONObject(body.ifEmpty { "{}" })))
-            path == "/api/update" && method == "GET" -> return json(out, 200, Updater.status(context))
-            path == "/api/update" && method == "PUT" -> return json(out, 200, Updater.saveSettings(context, JSONObject(body)))
-            path == "/api/update/check" && method == "POST" -> {
-                // 检查可能要依次尝试多个来源（最长约 1 分钟），放到后台，面板轮询 GET /api/update
-                Updater.startCheck(context)
-                return json(out, 200, Updater.status(context))
-            }
-            path == "/api/password" && method == "POST" -> {
-                val input = JSONObject(body)
-                if (!AdminAuth.verify(context, input.optString("current"), ip)) {
-                    val wait = AdminAuth.blockedSeconds(context, ip)
-                    val message = if (wait > 0) "密码错误次数过多，请 $wait 秒后再试" else "当前密码不正确"
-                    return json(out, 403, err("wrong_password").put("message", message).put("retryAfter", wait))
-                }
-                AdminAuth.setPassword(context, input.optString("password"))
-                return json(out, 200, JSONObject().put("ok", true))
-            }
-            path == "/api/logout" && method == "POST" -> { AdminAuth.forget(context, token); return json(out, 200, JSONObject().put("ok", true)) }
-            path == "/api/remote" && method == "POST" -> {
-                // 家长会话，或带「控制」权限的集成令牌；学习页的设备令牌不能调用
-                val parent = AdminAuth.valid(token, ip)
-                val control = IntegrationAuth.verify(context, token)?.control == true
-                if (!parent && !control) return json(out, 403, err("forbidden").put("message", "请先用管理密码登录"))
-                val input = JSONObject(body.ifEmpty { "{}" })
-                val status = DeviceRuntime.learning.remote(input.optString("action"), input.optInt("minutes"), if (parent) "panel" else "integration")
-                GateService.refreshNow()
-                return json(out, 200, JSONObject().put("learning", status))
-            }
-            path == "/api/integration" && method == "GET" -> return json(out, 200, IntegrationAuth.state(context))
-            path == "/api/integration" && method == "POST" -> {
-                val input = JSONObject(body.ifEmpty { "{}" })
-                val read = input.optBoolean("read", true)
-                val control = input.optBoolean("control", false)
-                if (!read && !control) return json(out, 200, err("bad_scope").put("message", "至少选择只读或控制中的一种权限"))
-                val token = IntegrationAuth.issue(context, read, control)
-                return json(out, 200, JSONObject().put("token", token).put("integration", IntegrationAuth.state(context)))
-            }
-            path == "/api/integration" && method == "PUT" -> {
-                val input = JSONObject(body.ifEmpty { "{}" })
-                IntegrationAuth.update(context,
-                    if (input.has("enabled")) input.optBoolean("enabled") else null,
-                    if (input.has("read")) input.optBoolean("read") else null,
-                    if (input.has("control")) input.optBoolean("control") else null)
-                return json(out, 200, IntegrationAuth.state(context))
-            }
-            path == "/api/integration" && method == "DELETE" -> {
-                IntegrationAuth.revoke(context)
-                return json(out, 200, IntegrationAuth.state(context))
-            }
-            path == "/api/logs" && method == "GET" -> return json(out, 200, JSONObject().put("lines", Diag.read(context, q["limit"]?.toIntOrNull()?.coerceIn(50, 3000) ?: 800, q["q"] ?: "")))
-            path == "/api/logs" && method == "DELETE" -> { Diag.clear(context); return json(out, 200, JSONObject().put("ok", true)) }
-            path == "/api/logs/export" && method == "GET" -> {
-                val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date())
-                return reply(out, 200, "application/zip", Diag.export(context), mapOf("Content-Disposition" to "attachment; filename=\"studyontv-logs-$stamp.zip\""))
-            }
-            path == "/api/device" && method == "GET" -> return json(out, 200, JSONObject().put("name", Prefs.deviceName(context))
-                .put("version", BuildConfig.VERSION_NAME).put("flavor", BuildConfig.FLAVOR).put("ip", localIp() ?: "").put("port", boundPort)
-                .put("uninstallProtected", UninstallGuard.active(context)).put("autostart", Watchdog.report(context)).put("monitor", GateService.diagnostics(context))
-                .put("buglyConsent", Prefs.buglyConsent(context)))
-            path == "/api/device/bugly" && method == "PUT" -> {
-                val enabled = JSONObject(body).optBoolean("enabled")
-                if (enabled) BuglyInit.initWithConsent(context) else BuglyInit.revoke(context)
-                return json(out, 200, JSONObject().put("ok", true).put("buglyConsent", Prefs.buglyConsent(context)))
-            }
-            path == "/api/device/uninstall-guard" && method == "DELETE" -> {
-                // 家长在网页端可以关闭防卸载（安全：需要家长登录 token）
-                return try {
-                    val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
-                    dpm.removeActiveAdmin(UninstallGuard.component(context))
-                    json(out, 200, JSONObject().put("ok", true).put("uninstallProtected", false))
-                } catch (e: Exception) {
-                    json(out, 500, err(e.message ?: "failed"))
-                }
-            }
-            path == "/api/device" && method == "PUT" -> {
-                val name = JSONObject(body).optString("name").trim()
-                require(name.length in 1..32) { "设备名称需要 1–32 个字" }
-                Prefs.setDeviceName(context, name)
-                return json(out, 200, JSONObject().put("ok", true).put("name", name))
-            }
-            path == "/api/grading" && method == "PUT" -> return json(out, 200, GradingService.save(store, JSONObject(body)))
-            path == "/api/reviews" && method == "GET" -> return json(out, 200, JSONObject().put("items", store.reviews(q["state"] ?: "pending")))
-            path.startsWith("/api/reviews/") && method == "POST" -> {
-                val id = path.removePrefix("/api/reviews/").substringBefore('/')
-                if (path.endsWith("/retry")) {
-                    require(store.review(id) != null) { "题目不存在" }
-                    GradingService.enqueue(store, DeviceRuntime.learning, id)
-                    return json(out, 200, JSONObject().put("ok", true))
-                }
-                val decision = JSONObject(body)
-                return json(out, 200, DeviceRuntime.learning.grade(id, decision.getDouble("score"), decision.optString("feedback"), "parent_or_agent"))
-            }
-            path == "/api/quiz/start" && method == "POST" -> {
-                if (!deviceAccess) return json(out, 403, err("device_only"))
-                return json(out, 200, DeviceRuntime.learning.start())
-            }
-            path == "/api/quiz/review" && method == "POST" -> {
-                if (!deviceAccess) return json(out, 403, err("device_only"))
-                return json(out, 200, DeviceRuntime.learning.acknowledgeReview(JSONObject(body).getString("reviewId")))
-            }
-            path == "/api/quiz/skip" && method == "POST" -> {
-                if (!deviceAccess) return json(out, 403, err("device_only"))
-                return json(out, 200, DeviceRuntime.learning.skipPending())
-            }
-            path == "/api/quiz/answer" && method == "POST" -> {
-                if (!deviceAccess) return json(out, 403, err("device_only"))
-                val result = DeviceRuntime.learning.answer(JSONObject(body))
-                Diag.info("Quiz", "answer correct=${result.optBoolean("correct")} finished=${result.optBoolean("finished")} pending=${result.optBoolean("pending")} reward=${result.optDouble("rewardMinutes", 0.0)}")
-                if (result.optBoolean("pending")) GradingService.enqueue(store, DeviceRuntime.learning, result.getString("reviewId"))
-                return json(out, 200, result)
-            }
-            path == "/api/event" && method == "POST" -> {
-                val payload = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
-                val type = payload.optString("type")
-                if (type != "study") return json(out, 403, err("event_managed_by_device"))
-                store.logEvent(type, payload)
-                return json(out, 200, JSONObject().put("ok", true))
-            }
-        }
+            // 按域分发：每个 handler 只处理自己那组路径，命中即返回 true
+            val handled = infoRoutes(req) || adminRoutes(req) || questionRoutes(req) ||
+                gradingRoutes(req) || updateRoutes(req) || integrationRoutes(req) ||
+                deviceRoutes(req) || quizRoutes(req) || diagnosticsRoutes(req)
+            if (handled) return
         } catch (e: Exception) {
             Diag.error("HTTP", "$method $path failed", e)
             return json(out, 400, JSONObject().put("error", "bad_request").put("message", e.message ?: "请求格式错误"))
@@ -419,6 +220,367 @@ class LanServer(
         if (path.startsWith("/api/")) return json(out, 404, err("not_found"))
         if (method != "GET") return json(out, 405, err("method_not_allowed"))
         serveStatic(path, out, headers["accept-encoding"]?.contains("gzip") == true, headers["if-none-match"])
+    }
+
+    /** 一次请求的上下文：处理器只依赖它，不必各自展开一长串参数 */
+    private class Req(
+        val method: String,
+        val path: String,
+        val q: Map<String, String>,
+        val body: String,
+        val out: OutputStream,
+        val deviceAccess: Boolean,
+        val parent: Boolean,
+        val integration: IntegrationAuth.Scope?,
+        val ip: String,
+        val token: String?
+    )
+
+    /** 概览 / 历史 / 节假日：家长面板首屏与统计页 */
+    private fun infoRoutes(r: Req): Boolean {
+        when {
+            r.path == "/api/hello" && r.method == "GET" -> {
+                json(r.out, 200, JSONObject()
+                    .put("app", "StudyOnTV")
+                    .put("version", BuildConfig.VERSION_NAME)
+                    .put("name", Prefs.deviceName(context))
+                    .put("ip", localIp() ?: "")
+                    .put("port", boundPort)
+                    .put("questions", store.countQuestions())
+                    .put("needsToken", true)
+                    .put("passwordRequired", true))
+                return true
+            }
+            r.path == "/api/state" && r.method == "GET" -> {
+                DeviceRuntime.learning.flushUsage()
+                json(r.out, 200, JSONObject()
+                    .put("config", store.config())
+                    .put("today", store.todayStats())
+                    .put("questions", store.countQuestions())
+                    .put("roundsDoneToday", store.roundsDoneToday())
+                    .put("repetition", store.repetitionStats())
+                    .put("learning", DeviceRuntime.learning.status()))
+                return true
+            }
+            r.path == "/api/history" && r.method == "GET" -> {
+                DeviceRuntime.learning.flushUsage()
+                val days = r.q["days"]?.toIntOrNull() ?: 7
+                json(r.out, 200, JSONObject().put("items", store.historyDays(days)))
+                return true
+            }
+            r.path == "/api/events" && r.method == "GET" -> {
+                json(r.out, 200, JSONObject().put("items", store.recentEvents(r.q["limit"]?.toIntOrNull() ?: 50)))
+                return true
+            }
+            r.path == "/api/holidays" && r.method == "GET" -> {
+                json(r.out, 200, HolidayService.info(context))
+                return true
+            }
+            r.path == "/api/holidays/sync" && r.method == "POST" -> {
+                val year = r.q["year"]?.toIntOrNull() ?: java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+                json(r.out, 200, try {
+                    HolidayService.fetch(context, year)
+                } catch (e: Exception) {
+                    err("holiday_failed").put("message", e.message ?: "节假日同步失败")
+                })
+                return true
+            }
+        }
+        return false
+    }
+
+    /** 规则 / 密码 / 遥控 / 集成令牌：只有家长会话可用 */
+    private fun adminRoutes(r: Req): Boolean {
+        when {
+            r.path == "/api/config" && r.method == "PUT" -> {
+                val input = jsonObjectOrNull(r.body) ?: run { json(r.out, 200, err("bad_json")); return true }
+                json(r.out, 200, JSONObject().put("config", store.saveConfig(input)))
+                return true
+            }
+            r.path == "/api/password" && r.method == "POST" -> {
+                val input = jsonObject(r.body)
+                if (!AdminAuth.verify(context, input.optString("current"), r.ip)) {
+                    val wait = AdminAuth.blockedSeconds(context, r.ip)
+                    val message = if (wait > 0) "密码错误次数过多，请 $wait 秒后再试" else "当前密码不正确"
+                    json(r.out, 403, err("wrong_password").put("message", message).put("retryAfter", wait))
+                    return true
+                }
+                AdminAuth.setPassword(context, input.optString("password"))
+                json(r.out, 200, JSONObject().put("ok", true))
+                return true
+            }
+            r.path == "/api/logout" && r.method == "POST" -> {
+                AdminAuth.forget(context, r.token)
+                json(r.out, 200, JSONObject().put("ok", true))
+                return true
+            }
+            r.path == "/api/remote" && r.method == "POST" -> {
+                // 家长会话，或带「控制」权限的集成令牌；学习页的设备令牌不能调用
+                if (!r.parent && r.integration?.control != true) {
+                    json(r.out, 403, err("forbidden").put("message", "请先用管理密码登录"))
+                    return true
+                }
+                val input = jsonObject(r.body)
+                val status = DeviceRuntime.learning.remote(input.optString("action"), input.optInt("minutes"),
+                    if (r.parent) "panel" else "integration")
+                GateService.refreshNow()
+                json(r.out, 200, JSONObject().put("learning", status))
+                return true
+            }
+        }
+        return false
+    }
+
+    /** 题库：列表 / 新增 / 批量暂停 / 删除 */
+    private fun questionRoutes(r: Req): Boolean {
+        when {
+            r.path == "/api/questions" && r.method == "GET" -> {
+                val all = r.q["all"] == "1"
+                val items = store.questions(r.q["subject"], r.q["level"], r.q["limit"]?.toIntOrNull() ?: 500,
+                    enabledOnly = !all, sortBy = r.q["sort"] ?: "random")
+                json(r.out, 200, JSONObject().put("items", items))
+                return true
+            }
+            r.path == "/api/questions" && r.method == "POST" -> {
+                val payload = jsonObjectOrNull(r.body) ?: run { json(r.out, 200, err("bad_json")); return true }
+                if (payload.has("items")) {
+                    val added = store.importQuestions(payload.getJSONArray("items"))
+                    json(r.out, 200, JSONObject().put("ok", true).put("added", added))
+                    return true
+                }
+                json(r.out, 200, try {
+                    val id = store.upsertQuestion(payload)
+                    store.logEvent("question_added", JSONObject().put("id", id))
+                    JSONObject().put("ok", true).put("id", id)
+                } catch (e: IllegalArgumentException) {
+                    JSONObject().put("error", "bad_question").put("message", e.message ?: "")
+                })
+                return true
+            }
+            r.path == "/api/questions/pause" && r.method == "POST" -> {
+                val input = jsonObject(r.body)
+                val ids = input.getJSONArray("ids")
+                require(ids.length() in 1..5000) { "请选择题目" }
+                json(r.out, 200, JSONObject().put("ok", true).put("updated",
+                    store.setEnabled((0 until ids.length()).map { ids.getString(it) }, input.optBoolean("enabled", false))))
+                return true
+            }
+            r.path == "/api/questions/delete" && r.method == "POST" -> {
+                val ids = jsonObject(r.body).getJSONArray("ids")
+                require(ids.length() in 1..5000) { "请选择要删除的题目" }
+                json(r.out, 200, JSONObject().put("ok", true)
+                    .put("deleted", store.deleteQuestions((0 until ids.length()).map { ids.getString(it) })))
+                return true
+            }
+            r.path.startsWith("/api/questions/") && r.method == "DELETE" -> {
+                val id = r.path.removePrefix("/api/questions/")
+                json(r.out, 200, JSONObject().put("ok", store.deleteQuestion(id)))
+                return true
+            }
+        }
+        return false
+    }
+
+    /** 批改：模型设置 / 连通性测试 / 待批列表与人工裁决 */
+    private fun gradingRoutes(r: Req): Boolean {
+        when {
+            r.path == "/api/grading" && r.method == "GET" -> {
+                json(r.out, 200, GradingService.settings(store).put("providers", GradingService.providers()))
+                return true
+            }
+            r.path == "/api/grading" && r.method == "PUT" -> {
+                json(r.out, 200, GradingService.save(store, jsonObject(r.body)))
+                return true
+            }
+            r.path == "/api/grading/test" && r.method == "POST" -> {
+                json(r.out, 200, GradingService.test(store, jsonObject(r.body)))
+                return true
+            }
+            r.path == "/api/grading/models" && r.method == "POST" -> {
+                json(r.out, 200, GradingService.models(store, jsonObject(r.body)))
+                return true
+            }
+            r.path == "/api/reviews" && r.method == "GET" -> {
+                json(r.out, 200, JSONObject().put("items", store.reviews(r.q["state"] ?: "pending")))
+                return true
+            }
+            r.path.startsWith("/api/reviews/") && r.method == "POST" -> {
+                val id = r.path.removePrefix("/api/reviews/").substringBefore('/')
+                if (r.path.endsWith("/retry")) {
+                    require(store.review(id) != null) { "题目不存在" }
+                    GradingService.enqueue(store, DeviceRuntime.learning, id)
+                    json(r.out, 200, JSONObject().put("ok", true))
+                    return true
+                }
+                val decision = jsonObject(r.body)
+                json(r.out, 200, DeviceRuntime.learning.grade(id, decision.getDouble("score"),
+                    decision.optString("feedback"), "parent_or_agent"))
+                return true
+            }
+        }
+        return false
+    }
+
+    /** 应用内更新：状态 / 设置 / 触发检查（检查在后台跑，面板轮询 GET） */
+    private fun updateRoutes(r: Req): Boolean {
+        when {
+            r.path == "/api/update" && r.method == "GET" -> {
+                json(r.out, 200, Updater.status(context))
+                return true
+            }
+            r.path == "/api/update" && r.method == "PUT" -> {
+                json(r.out, 200, Updater.saveSettings(context, jsonObject(r.body)))
+                return true
+            }
+            r.path == "/api/update/check" && r.method == "POST" -> {
+                // 检查可能要依次尝试多个来源（最长约 1 分钟），放到后台，面板轮询 GET /api/update
+                Updater.startCheck(context)
+                json(r.out, 200, Updater.status(context))
+                return true
+            }
+        }
+        return false
+    }
+
+    /** 集成令牌（Home Assistant 等外部调用方） */
+    private fun integrationRoutes(r: Req): Boolean {
+        when {
+            r.path == "/api/integration" && r.method == "GET" -> {
+                json(r.out, 200, IntegrationAuth.state(context))
+                return true
+            }
+            r.path == "/api/integration" && r.method == "POST" -> {
+                val input = jsonObject(r.body)
+                val read = input.optBoolean("read", true)
+                val control = input.optBoolean("control", false)
+                if (!read && !control) {
+                    json(r.out, 200, err("bad_scope").put("message", "至少选择只读或控制中的一种权限"))
+                    return true
+                }
+                val issued = IntegrationAuth.issue(context, read, control)
+                json(r.out, 200, JSONObject().put("token", issued).put("integration", IntegrationAuth.state(context)))
+                return true
+            }
+            r.path == "/api/integration" && r.method == "PUT" -> {
+                val input = jsonObject(r.body)
+                IntegrationAuth.update(context,
+                    if (input.has("enabled")) input.optBoolean("enabled") else null,
+                    if (input.has("read")) input.optBoolean("read") else null,
+                    if (input.has("control")) input.optBoolean("control") else null)
+                json(r.out, 200, IntegrationAuth.state(context))
+                return true
+            }
+            r.path == "/api/integration" && r.method == "DELETE" -> {
+                IntegrationAuth.revoke(context)
+                json(r.out, 200, IntegrationAuth.state(context))
+                return true
+            }
+        }
+        return false
+    }
+
+    /** 设备信息 / 上报开关 / 防卸载 / 埋点事件 */
+    private fun deviceRoutes(r: Req): Boolean {
+        when {
+            r.path == "/api/device" && r.method == "GET" -> {
+                json(r.out, 200, JSONObject().put("name", Prefs.deviceName(context))
+                    .put("version", BuildConfig.VERSION_NAME).put("flavor", BuildConfig.FLAVOR)
+                    .put("ip", localIp() ?: "").put("port", boundPort)
+                    .put("uninstallProtected", UninstallGuard.active(context))
+                    .put("autostart", Watchdog.report(context))
+                    .put("monitor", GateService.diagnostics(context))
+                    .put("buglyConsent", Prefs.buglyConsent(context)))
+                return true
+            }
+            r.path == "/api/device" && r.method == "PUT" -> {
+                val name = jsonObject(r.body).optString("name").trim()
+                require(name.length in 1..32) { "设备名称需要 1–32 个字" }
+                Prefs.setDeviceName(context, name)
+                json(r.out, 200, JSONObject().put("ok", true).put("name", name))
+                return true
+            }
+            r.path == "/api/device/bugly" && r.method == "PUT" -> {
+                if (jsonObject(r.body).optBoolean("enabled")) BuglyInit.initWithConsent(context) else BuglyInit.revoke(context)
+                json(r.out, 200, JSONObject().put("ok", true).put("buglyConsent", Prefs.buglyConsent(context)))
+                return true
+            }
+            r.path == "/api/device/uninstall-guard" && r.method == "DELETE" -> {
+                // 家长在网页端可以关闭防卸载（安全：需要家长登录 token）
+                json(r.out, 200, try {
+                    val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+                    dpm.removeActiveAdmin(UninstallGuard.component(context))
+                    JSONObject().put("ok", true).put("uninstallProtected", false)
+                } catch (e: Exception) {
+                    err(e.message ?: "failed")
+                })
+                return true
+            }
+            r.path == "/api/event" && r.method == "POST" -> {
+                val payload = jsonObject(r.body)
+                val type = payload.optString("type")
+                if (type != "study") {
+                    json(r.out, 403, err("event_managed_by_device"))
+                    return true
+                }
+                store.logEvent(type, payload)
+                json(r.out, 200, JSONObject().put("ok", true))
+                return true
+            }
+        }
+        return false
+    }
+
+    /** 答题流程：只有设备端（学习页）能调用，家长面板与集成令牌都不行 */
+    private fun quizRoutes(r: Req): Boolean {
+        when {
+            r.path == "/api/quiz/start" && r.method == "POST" -> {
+                if (!r.deviceAccess) { json(r.out, 403, err("device_only")); return true }
+                json(r.out, 200, DeviceRuntime.learning.start())
+                return true
+            }
+            r.path == "/api/quiz/review" && r.method == "POST" -> {
+                if (!r.deviceAccess) { json(r.out, 403, err("device_only")); return true }
+                json(r.out, 200, DeviceRuntime.learning.acknowledgeReview(jsonObject(r.body).getString("reviewId")))
+                return true
+            }
+            r.path == "/api/quiz/skip" && r.method == "POST" -> {
+                if (!r.deviceAccess) { json(r.out, 403, err("device_only")); return true }
+                json(r.out, 200, DeviceRuntime.learning.skipPending())
+                return true
+            }
+            r.path == "/api/quiz/answer" && r.method == "POST" -> {
+                if (!r.deviceAccess) { json(r.out, 403, err("device_only")); return true }
+                val result = DeviceRuntime.learning.answer(jsonObject(r.body))
+                Diag.info("Quiz", "answer correct=${result.optBoolean("correct")} finished=${result.optBoolean("finished")} pending=${result.optBoolean("pending")} reward=${result.optDouble("rewardMinutes", 0.0)}")
+                if (result.optBoolean("pending")) GradingService.enqueue(store, DeviceRuntime.learning, result.getString("reviewId"))
+                json(r.out, 200, result)
+                return true
+            }
+        }
+        return false
+    }
+
+    /** 诊断日志：查看 / 清空 / 导出 */
+    private fun diagnosticsRoutes(r: Req): Boolean {
+        when {
+            r.path == "/api/logs" && r.method == "GET" -> {
+                json(r.out, 200, JSONObject()
+                    .put("lines", Diag.read(context, r.q["limit"]?.toIntOrNull()?.coerceIn(50, 3000) ?: 800, r.q["q"] ?: "")))
+                return true
+            }
+            r.path == "/api/logs" && r.method == "DELETE" -> {
+                Diag.clear(context)
+                json(r.out, 200, JSONObject().put("ok", true))
+                return true
+            }
+            r.path == "/api/logs/export" && r.method == "GET" -> {
+                val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date())
+                reply(r.out, 200, "application/zip", Diag.export(context),
+                    mapOf("Content-Disposition" to "attachment; filename=\"studyontv-logs-$stamp.zip\""))
+                return true
+            }
+        }
+        return false
     }
 
     /** gzip 后的静态文件缓存（资源随 APK 固定不变，压缩一次即可） */
