@@ -51,4 +51,14 @@ object DeviceRuntime {
         return org.json.JSONObject().put("ip", server?.localIp() ?: "")
             .put("port", Prefs.localPort(context)).put("token", store.adminToken())
     }
+
+    /**
+     * WebView 里的页面通过 JS 桥调用接口：进程内直接执行路由，避免把设备令牌交给 JS，
+     * 也省掉一次 TCP + HTTP 解析。返回 JSON 字符串。
+     */
+    fun local(method: String, path: String, body: String): String {
+        val current = server ?: return org.json.JSONObject().put("error", "not_ready")
+            .put("message", "设备还没准备好，请稍后重试").toString()
+        return current.localJson(method, path, body)
+    }
 }

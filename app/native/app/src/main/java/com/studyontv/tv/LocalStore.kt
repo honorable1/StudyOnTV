@@ -48,7 +48,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
         try {
             db.execSQL("DELETE FROM events WHERE type='usage'")
             buckets.forEach { (hour, ms) ->
-                if (ms > 0) db.execSQL("INSERT INTO events(type,payload,ts) VALUES(?,?,?)", arrayOf("usage", JSONObject().put("milliseconds", ms).toString(), hour))
+                if (ms > 0) db.execSQL("INSERT INTO events(type,payload,ts) VALUES(?,?,?)", arrayOf<Any?>("usage", JSONObject().put("milliseconds", ms).toString(), hour))
             }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
@@ -128,7 +128,26 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
         UUID.randomUUID().toString().also { set("admin_token", it) }
     }
 
+    /**
+     * 配置的解析结果会缓存。GateService 每秒调用多次 config()，每次都重新解析 JSON、
+     * 跑 3 条正则、归一化周表，在电视上是明显的浪费；配置只在 saveConfig() 时变化，
+     * 所以用 kv 里的原始字符串作为缓存键即可正确失效。
+     * 注意：返回的对象是共享实例，调用方不得修改（需要改请先复制）。
+     */
+    @Volatile private var cachedConfigRaw: String? = null
+    @Volatile private var cachedConfig: JSONObject? = null
+
     fun config(): JSONObject {
+        val raw = get("config", "")
+        val cached = cachedConfig
+        if (cached != null && cachedConfigRaw == raw) return cached
+        val value = buildConfig(raw)
+        cachedConfig = value
+        cachedConfigRaw = raw
+        return value
+    }
+
+    private fun buildConfig(raw: String): JSONObject {
         val defaults = JSONObject().put("dailyMinutes", 40).put("sessionMinutes", 10)
             .put("questionsPerRound", 5).put("roundsPerDay", 3).put("passRatio", 0.6)
             .put("windowStart", "18:30").put("windowEnd", "20:00").put("allDay", true).put("spacedRepetitionEnabled", false)
@@ -141,7 +160,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
             .put("holidayMode", "sunday")
             .put("quizSubjects", JSONArray()).put("quizLevels", JSONArray())
             .put("version", 1)
-        val saved = try { JSONObject(get("config", "{}")) } catch (e: Exception) { JSONObject() }
+        val saved = try { JSONObject(raw.ifEmpty { "{}" }) } catch (e: Exception) { JSONObject() }
         saved.keys().forEach { defaults.put(it, saved.get(it)) }
         // 旧版的四种配色主题合并为深色 / 浅色
         defaults.put("theme", when (defaults.optString("theme")) { "light", "daylight" -> "light"; "system" -> "system"; "dark", "midnight", "nord", "amber" -> "dark"; else -> if (BuildConfig.FLAVOR == "tv") "dark" else "system" })
@@ -160,8 +179,8 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
                 else weekFromWindow(defaults.optBoolean("allDay"), defaults.optString("windowStart"), defaults.optString("windowEnd"))
             } else fullWeek()
         defaults.put("weekSlots", migrated)
+        // 只修正非法值，不要顺带清空家长配置的答题范围（历史上这里是一行链式调用，会误清空）
         if (defaults.optString("holidayMode") !in listOf("sunday", "normal")) defaults.put("holidayMode", "sunday")
-            .put("quizSubjects", JSONArray()).put("quizLevels", JSONArray())
         return defaults
     }
 
@@ -199,7 +218,8 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
     }
 
     fun saveConfig(input: JSONObject): JSONObject {
-        val next = config()
+        // config() 返回的是缓存实例，这里要复制一份再改，避免污染缓存
+        val next = JSONObject(config().toString())
         val ranges = mapOf("dailyMinutes" to 1..480, "sessionMinutes" to 1..120,
             "questionsPerRound" to 1..100, "roundsPerDay" to 1..100,
             "wrongThreshold" to 1..100, "extraQuestions" to 1..100)
@@ -254,6 +274,10 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
         }
         if (input.has("weekSlots")) {
             val clean = normalizeWeek(input.optJSONArray("weekSlots")) ?: throw IllegalArgumentException("可用时段格式不正确")
+            // 七天全关等于设备永久不可用，前端会显示"暂无可用时段"，几乎总是误操作
+            require(next.optBoolean("allDay") || (0 until 7).any { clean.optString(it).contains('1') }) {
+                "可用时段不能全部关闭；需要临时停用请用「暂停使用」"
+            }
             next.put("weekSlots", clean)
         }
         if (input.has("holidayMode")) {
@@ -283,11 +307,21 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
     }
 
     fun questions(subject: String? = null, level: String? = null, limit: Int = 200, spaced: Boolean = false,
-                   enabledOnly: Boolean = true, sortBy: String = "random"): JSONArray {
+                   enabledOnly: Boolean = true, sortBy: String = "random",
+                   subjects: List<String> = emptyList(), levels: List<String> = emptyList()): JSONArray {
         val where = StringBuilder(if (enabledOnly) "enabled=1" else "1=1")
         val args = mutableListOf<String>()
         if (!subject.isNullOrEmpty()) { where.append(" AND subject=?"); args.add(subject) }
         if (!level.isNullOrEmpty()) { where.append(" AND level=?"); args.add(level) }
+        // 多科目 / 多年级：仍然用参数绑定，只动态拼占位符
+        if (subjects.isNotEmpty()) {
+            where.append(" AND subject IN (").append(subjects.joinToString(",") { "?" }).append(")")
+            args.addAll(subjects)
+        }
+        if (levels.isNotEmpty()) {
+            where.append(" AND level IN (").append(levels.joinToString(",") { "?" }).append(")")
+            args.addAll(levels)
+        }
         val out = JSONArray()
         val source = if (spaced) "questions LEFT JOIN question_progress progress ON questions.id=progress.qid" else "questions"
         val order = if (spaced) "CASE WHEN progress.due_at<=${System.currentTimeMillis()} THEN 0 WHEN progress.qid IS NULL THEN 1 ELSE 2 END, progress.due_at ASC, RANDOM()"
@@ -385,7 +419,8 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
     }
 
     fun logEvent(type: String, payload: JSONObject) {
-        writableDatabase.execSQL("INSERT INTO events(type,payload,ts) VALUES(?,?,?)", arrayOf(type, payload.toString(), System.currentTimeMillis()))
+        writableDatabase.execSQL("INSERT INTO events(type,payload,ts) VALUES(?,?,?)", arrayOf<Any?>(type, payload.toString(), System.currentTimeMillis()))
+        todayCached = null      // 当天统计缓存立即失效
     }
 
     fun recentEvents(limit: Int = 50): JSONArray {
@@ -396,12 +431,52 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
         return out
     }
 
+    /** SQLite 3.9+ 自带 json1 扩展；老系统上没有时回落到逐行解析 */
+    private val json1Available: Boolean by lazy {
+        try {
+            readableDatabase.rawQuery("""SELECT json_extract('{"a":1}','$.a')""", null).use { it.moveToFirst() }
+            true
+        } catch (_: Exception) { false }
+    }
+
     fun stats(start: Long, end: Long): JSONObject {
+        val args = arrayOf(start.toString(), end.toString())
+        if (json1Available) {
+            try { return statsSql(args) } catch (e: Exception) { Diag.warn("Store", "SQL 统计失败，回落到逐行解析：" + (e.message ?: "")) }
+        }
+        return statsLoop(args)
+    }
+
+    /** 用 SQL 聚合代替把当天每一行事件反序列化一遍（面板每 2 秒轮询一次 /api/state） */
+    private fun statsSql(args: Array<String>): JSONObject {
+        val sql = """
+            SELECT
+              COALESCE(SUM(CASE WHEN type='usage' THEN CAST(json_extract(payload,'$.milliseconds') AS INTEGER) ELSE 0 END),0),
+              COALESCE(SUM(CASE WHEN type='answer' THEN 1 ELSE 0 END),0),
+              COALESCE(SUM(CASE WHEN type='answer' AND json_extract(payload,'$.correct')=1 THEN 1 ELSE 0 END),0),
+              COALESCE(SUM(CASE WHEN type='quiz' AND COALESCE(json_extract(payload,'$.native'),0)=0 THEN CAST(json_extract(payload,'$.total') AS INTEGER) ELSE 0 END),0),
+              COALESCE(SUM(CASE WHEN type='quiz' AND COALESCE(json_extract(payload,'$.native'),0)=0 THEN CAST(json_extract(payload,'$.correct') AS INTEGER) ELSE 0 END),0),
+              COALESCE(SUM(CASE WHEN type='quiz_pass' THEN 1 ELSE 0 END),0)
+            FROM events WHERE ts>=? AND ts<? AND json_valid(payload)
+        """.trimIndent()
+        var usedMs = 0L; var answered = 0; var correct = 0; var rounds = 0
+        readableDatabase.rawQuery(sql, args).use { c ->
+            if (c.moveToFirst()) {
+                usedMs = c.getLong(0)
+                answered = c.getInt(1) + c.getInt(3)
+                correct = c.getInt(2) + c.getInt(4)
+                rounds = c.getInt(5)
+            }
+        }
+        return summary(usedMs, answered, correct, rounds)
+    }
+
+    private fun statsLoop(args: Array<String>): JSONObject {
         var usedMs = 0L
         var answered = 0
         var correct = 0
         var rounds = 0
-        readableDatabase.rawQuery("SELECT type,payload FROM events WHERE ts>=? AND ts<?", arrayOf(start.toString(), end.toString())).use { c ->
+        readableDatabase.rawQuery("SELECT type,payload FROM events WHERE ts>=? AND ts<?", args).use { c ->
             while (c.moveToNext()) {
                 val p = try { JSONObject(c.getString(1)) } catch (e: Exception) { JSONObject() }
                 when (c.getString(0)) {
@@ -412,12 +487,26 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
                 }
             }
         }
-        return JSONObject().put("usedMinutes", usedMs / 60000.0).put("watch", usedMs / 60000.0)
-            .put("answered", answered).put("correct", correct).put("rounds", rounds)
-            .put("accuracy", if (answered > 0) correct * 100 / answered else 0)
+        return summary(usedMs, answered, correct, rounds)
     }
 
-    fun todayStats(): JSONObject = stats(startOfToday(), Long.MAX_VALUE)
+    private fun summary(usedMs: Long, answered: Int, correct: Int, rounds: Int): JSONObject =
+        JSONObject().put("usedMinutes", usedMs / 60000.0).put("watch", usedMs / 60000.0)
+            .put("answered", answered).put("correct", correct).put("rounds", rounds)
+            .put("accuracy", if (answered > 0) correct * 100 / answered else 0)
+
+    @Volatile private var todayCachedAt = 0L
+    @Volatile private var todayCached: String? = null
+
+    /** 上界取「明天 0 点」：用 Long.MAX_VALUE 会把系统时间异常写入的未来事件也算进今天 */
+    fun todayStats(): JSONObject {
+        val now = System.currentTimeMillis()
+        val cached = todayCached
+        if (cached != null && now - todayCachedAt in 0..2000) return JSONObject(cached)
+        val value = stats(startOfToday(), startOfTomorrow())
+        todayCached = value.toString(); todayCachedAt = now
+        return value
+    }
     // status() 每秒都会调用，这里直接计数，不再解析今天的全部事件
     fun roundsDoneToday(): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM events WHERE type='quiz_pass' AND ts>=?", arrayOf(startOfToday().toString())).use {
         if (it.moveToFirst()) it.getInt(0) else 0
@@ -439,5 +528,10 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
 
     fun startOfToday(): Long = Calendar.getInstance().apply {
         set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+
+    fun startOfTomorrow(): Long = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        add(Calendar.DAY_OF_YEAR, 1)
     }.timeInMillis
 }

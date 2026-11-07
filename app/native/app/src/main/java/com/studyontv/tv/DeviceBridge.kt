@@ -22,8 +22,12 @@ open class DeviceBridge(protected val activity: Activity, private val connection
         activity.runOnUiThread { web?.let { InputSupport.openText(activity, it, draft, prompt) } }
     }
 
+    /**
+     * 页面内的接口调用统一走原生层（进程内直接执行路由，不经过 TCP）。
+     * 这样设备令牌永远不需要交给 JS，即使页面将来出现 XSS 也拿不到能直接提交答案的凭据。
+     */
     @JavascriptInterface
-    fun apiToken(): String = AdminAuth.deviceToken
+    fun api(method: String, path: String, body: String): String = DeviceRuntime.local(method, path, body)
 
     /** 连接页（家长已验证）里的按钮：权限设置 / 修改密码 */
     @JavascriptInterface

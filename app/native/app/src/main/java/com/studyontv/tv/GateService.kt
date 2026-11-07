@@ -208,13 +208,19 @@ class GateService : Service() {
     private fun isSettings(pkg: String): Boolean = pkg == systemSettingsPackage ||
         pkg in setOf("com.android.settings", "com.android.tv.settings", "com.google.android.tv.settings")
 
+    /** 桌面包名只解析一次：exempt() 每秒被调用 3~4 次，每次都走 PackageManager IPC 在电视上很贵 */
+    private val launcherPackage: String? by lazy {
+        try {
+            packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0)?.activityInfo?.packageName
+        } catch (_: Exception) { null }
+    }
+
     private fun exempt(pkg: String, includeLauncher: Boolean = true): Boolean {
         if (pkg == packageName || pkg == "com.android.systemui" || pkg == "android" || pkg.contains("packageinstaller")) return true
         if (pkg.contains("permissioncontroller") || pkg.contains("inputmethod") || pkg.contains("keyboard")) return true
         if (pkg == systemSettingsPackage || pkg in setOf("com.android.settings", "com.android.tv.settings", "com.google.android.tv.settings", "com.google.android.dialer", "com.android.dialer", "com.android.phone", "com.android.server.telecom", "com.android.emergency")) return true
         if (!includeLauncher) return false
-        val launcher = packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0)?.activityInfo?.packageName
-        return pkg == launcher || Foreground.isLauncher(pkg)
+        return pkg == launcherPackage || Foreground.isLauncher(pkg)
     }
 
     override fun onCreate() {
@@ -247,6 +253,8 @@ class GateService : Service() {
 
     /** 手机上从“最近任务”划掉应用时，部分系统会连带停止服务；2 秒后自动拉起 */
     override fun onTaskRemoved(rootIntent: Intent?) {
+        // 余额现在是内存累计、定期落盘，这里补一次，避免划掉任务时丢掉最近 10 秒的用量
+        try { DeviceRuntime.learning.flushUsage() } catch (_: Exception) { }
         scheduleRestart(this, 2000)
         super.onTaskRemoved(rootIntent)
     }

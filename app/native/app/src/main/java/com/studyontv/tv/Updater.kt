@@ -23,7 +23,10 @@ object Updater {
     )
     /** 公益 GitHub 加速镜像，随时可能失效；家长可在管理面板中修改 */
     val DEFAULT_MIRRORS = emptyList<String>()
+    /** 只有这些域名才走镜像前缀拼接（蒲公英的安装地址套镜像没有意义） */
+    private val MIRRORABLE = listOf("https://github.com/", "https://raw.githubusercontent.com/", "https://objects.githubusercontent.com/")
     private const val CACHE_MS = 6L * 60 * 60 * 1000
+    private const val MAX_MANIFEST = 2_000_000
 
     data class Info(
         val latest: String,
@@ -43,9 +46,19 @@ object Updater {
             .map { if (it.endsWith("/")) it else "$it/" }.distinct()
     }
 
-    /** 可用的 APK 下载地址：上次成功的线路优先，其次直连，再其次各个镜像 */
-    fun downloadCandidates(ctx: Context, url: String): List<Pair<String, String>> =
-        listOf("蒲公英" to url)
+    /**
+     * 可用的 APK 下载地址：上次成功的线路优先，其次直连，再其次家长配置的镜像。
+     * 镜像按「前缀 + 原始地址」拼接（如 https://ghfast.top/https://github.com/...）。
+     */
+    fun downloadCandidates(ctx: Context, url: String): List<Pair<String, String>> {
+        val list = mutableListOf<Pair<String, String>>()
+        list.add("直连" to url)
+        if (MIRRORABLE.any { url.startsWith(it) }) {
+            mirrors(ctx).forEach { base -> list.add("镜像" to base + url) }
+        }
+        val last = Prefs.updateLastSource(ctx)
+        return list.sortedByDescending { if (it.first == last) 1 else 0 }
+    }
 
     fun check(ctx: Context, forceRefresh: Boolean = false, onResult: (Info?) -> Unit) {
         val cachedAt = Prefs.updateCheckedAt(ctx)
@@ -71,17 +84,58 @@ object Updater {
     fun checkNow(ctx: Context): Pair<Info?, JSONArray> {
         val log = JSONArray()
         val current = currentVersion(ctx)
-        val started = System.currentTimeMillis()
         var info: Info? = null
-        try {
-            info = Pgyer.info(ctx, current, currentVersionCode(ctx))
-            log.put(JSONObject().put("source", "蒲公英").put("ok", info != null).put("ms", System.currentTimeMillis() - started)
-                .put("message", if (info == null) "当前已是最新版本" else "v" + info.latest))
-        } catch (e: Exception) {
-            Diag.error("Update", "Pgyer check failed", e)
-            log.put(JSONObject().put("source", "蒲公英").put("ok", false).put("ms", System.currentTimeMillis() - started)
-                .put("message", e.message?.take(160) ?: e.javaClass.simpleName))
+
+        /** @return true 表示这一来源已经给出结论（有新版本，或确认已是最新），无需再试下一个 */
+        fun manifestAttempt(name: String, endpoint: String): Boolean {
+            val started = System.currentTimeMillis()
+            return try {
+                val data = fetch(endpoint)
+                val parsed = if (data == null) null else parse(data, current, name)
+                val newer = parsed != null && isNewer(parsed.latest, current)
+                log.put(JSONObject().put("source", name).put("ok", parsed != null).put("ms", System.currentTimeMillis() - started)
+                    .put("message", when {
+                        data == null -> "没有返回数据"
+                        parsed == null -> "没有本机可用的版本"
+                        newer -> "v" + parsed.latest
+                        else -> "当前已是最新版本"
+                    }))
+                if (newer) { info = parsed; true } else parsed != null
+            } catch (e: Exception) {
+                Diag.warn("Update", "$name 检查失败：" + (e.message ?: e.javaClass.simpleName))
+                log.put(JSONObject().put("source", name).put("ok", false).put("ms", System.currentTimeMillis() - started)
+                    .put("message", e.message?.take(160) ?: e.javaClass.simpleName))
+                false
+            }
         }
+
+        var resolved = false
+        // 1) 家长自建的更新地址（面板里配置的 api），显式配置优先
+        val custom = api(ctx).trim()
+        if (custom.isNotEmpty()) resolved = manifestAttempt("自定义", custom)
+        // 2) 蒲公英（国内可直连，是当前的发布渠道）
+        if (!resolved) {
+            val started = System.currentTimeMillis()
+            try {
+                val pgyer = Pgyer.info(ctx, current, currentVersionCode(ctx))
+                log.put(JSONObject().put("source", "蒲公英").put("ok", pgyer != null).put("ms", System.currentTimeMillis() - started)
+                    .put("message", if (pgyer == null) "当前已是最新版本" else "v" + pgyer.latest))
+                if (pgyer != null) info = pgyer
+                resolved = true      // 能连上就以蒲公英的结论为准，不再增加无谓的超时等待
+            } catch (e: Exception) {
+                Diag.warn("Update", "蒲公英检查失败：" + (e.message ?: e.javaClass.simpleName))
+                log.put(JSONObject().put("source", "蒲公英").put("ok", false).put("ms", System.currentTimeMillis() - started)
+                    .put("message", e.message?.take(160) ?: e.javaClass.simpleName))
+            }
+        }
+        // 3) 更新清单（多个 CDN），4) GitHub Release —— 只在前面都不可用时兜底
+        if (!resolved) {
+            MANIFEST_URLS.forEachIndexed { index, endpoint ->
+                if (!resolved) resolved = manifestAttempt("更新清单${index + 1}", endpoint)
+            }
+        }
+        if (!resolved) manifestAttempt("GitHub Release", GITHUB_API)
+
         Prefs.setUpdateInfo(ctx, info?.let { toJson(it).toString() } ?: "")
         Prefs.setUpdateCheckedAt(ctx, System.currentTimeMillis())
         Prefs.setUpdateLog(ctx, JSONObject().put("at", System.currentTimeMillis()).put("items", log).toString())
@@ -113,8 +167,9 @@ object Updater {
         return try {
             val code = conn.responseCode
             if (code !in 200..299) throw IllegalStateException(if (code == 403 || code == 429) "HTTP $code（请求太频繁或被限流）" else "HTTP $code")
-            val text = conn.inputStream.use { stream -> stream.readBytes().also { require(it.size < 2_000_000) { "响应过大" } } }
-            JSONObject(String(text, Charsets.UTF_8))
+            if (Net.declaredLength(conn) > MAX_MANIFEST) throw IllegalStateException("响应过大")
+            val text = try { Net.text(conn.inputStream, MAX_MANIFEST) } catch (_: Net.TooLarge) { throw IllegalStateException("响应过大") }
+            JSONObject(text)
         } finally {
             conn.disconnect()
         }

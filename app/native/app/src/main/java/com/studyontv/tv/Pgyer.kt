@@ -42,9 +42,10 @@ object Pgyer {
         try {
             connection.outputStream.use { it.write(form.toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
-            val text = (if (code in 200..299) connection.inputStream else connection.errorStream)?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
             require(code in 200..299) { "蒲公英返回 HTTP $code" }
-            require(text.length < 1_000_000) { "蒲公英响应过大" }
+            if (Net.declaredLength(connection) > 1_000_000) throw IllegalStateException("蒲公英响应过大")
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val text = try { Net.text(stream, 1_000_000) } catch (_: Net.TooLarge) { throw IllegalStateException("蒲公英响应过大") }
             val root = JSONObject(text)
             require(root.optInt("code", 0) == 0) { root.optString("message").ifEmpty { "蒲公英检查更新失败" } }
             val data = root.optJSONObject("data") ?: return null

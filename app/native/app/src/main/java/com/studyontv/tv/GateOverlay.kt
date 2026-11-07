@@ -102,7 +102,7 @@ class GateOverlay(
     }
 
     private inner class Bridge {
-        @JavascriptInterface fun apiToken(): String = AdminAuth.deviceToken
+        @JavascriptInterface fun api(method: String, path: String, body: String): String = DeviceRuntime.local(method, path, body)
         @JavascriptInterface fun deviceInfo(): String = org.json.JSONObject()
             .put("platform", if (DeviceBridge.isTv(context)) "android-tv" else "android").put("night", TvUi.systemNight(context)).toString()
         @JavascriptInterface fun answerInput(voice: Boolean) {

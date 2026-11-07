@@ -9,13 +9,23 @@
     try { if (bridge && typeof bridge[name] === 'function') return bridge[name].apply(bridge, args || []); } catch (e) {}
     return null;
   }
+  // 接口调用优先走原生桥（进程内路由）：设备令牌不再交给 JS，页面即使被注入脚本也拿不到凭据
   function request(path, body, callback) {
+    var bridge = window.SOTVNative;
+    if (bridge && typeof bridge.api === 'function') {
+      var raw = '';
+      try { raw = bridge.api(body ? 'POST' : 'GET', path, body ? JSON.stringify(body) : ''); } catch (e) { raw = ''; }
+      var payload;
+      try { payload = JSON.parse(raw); } catch (e) { return callback('连接设备失败'); }
+      if (!payload) return callback('连接设备失败');
+      if (payload.error) return callback(payload.message || '请求失败，请重试');
+      return callback(null, payload);
+    }
     var xhr = new XMLHttpRequest(), finished = false;
     function done(error, value) { if (finished) return; finished = true; callback(error, value); }
     xhr.open(body ? 'POST' : 'GET', path, true);
     xhr.timeout = 8000;
     xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.setRequestHeader('X-Device-Token', nativeCall('apiToken') || '');
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== 4) return;
       var data;
@@ -276,11 +286,14 @@
     icon($('lockIcon'), reason === 'schedule' ? 'clock' : 'hourglass');
     $('lockTitle').textContent = reason === 'schedule' ? '还没到可用时间' : reason === 'rounds' ? '今天的任务已全部完成' : reason === 'quota' ? '今天的使用时间已用完' : '使用时间到了';
     var when = '';
-    if (state.learning.nextAvailableAt) {
+    // 家长把一周时段全部关掉时后端返回 -1：此时不能显示"下次可用：现在"
+    if (state.learning.nextAvailableAt > 0) {
       var date = new Date(state.learning.nextAvailableAt);
       when = (date.getMonth() + 1) + ' 月 ' + date.getDate() + ' 日 ' + ('0' + date.getHours()).slice(-2) + ':' + ('0' + date.getMinutes()).slice(-2);
     }
-    $('lockDesc').textContent = when ? '下次可用：' + when : reason === 'timeup' ? '完成学习任务后才能使用设备' : '现在暂不可用';
+    $('lockDesc').textContent = when ? '下次可用：' + when
+      : state.learning.nextAvailableAt < 0 ? '暂无可用时段，请联系家长调整规则'
+      : reason === 'timeup' ? '完成学习任务后才能使用设备' : '现在暂不可用';
     $('lockNote').textContent = state.config.allDay ? '' : '可用时段 ' + state.config.windowStart + ' — ' + state.config.windowEnd;
     $('lockActions').innerHTML = reason === 'timeup' ? '<button class="btn btn-primary focusable" data-action="retry">开始答题</button>' : '';
     focusDefault();

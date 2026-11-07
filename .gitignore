@@ -20,6 +20,7 @@ node_modules/
 /app/native/app/src/main/assets/web/
 /app/native/app/src/main/assets/admin/
 /app/native/app/src/main/assets/questions.json
+/app/native/app/src/main/assets/holidays/
 StudyOnTV-*.apk
 *.idsig
 *.jks

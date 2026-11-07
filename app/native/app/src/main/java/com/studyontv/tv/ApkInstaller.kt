@@ -14,6 +14,9 @@ import java.net.URL
 
 object ApkInstaller {
 
+    /** 200 MB 上限：足够任何正常安装包，又能防止异常/恶意线路把设备存储写满 */
+    private const val MAX_APK_BYTES = 200L * 1024 * 1024
+
     private fun dir(ctx: Context): File = File(ctx.cacheDir, "updates").apply { mkdirs() }
 
     fun apkFile(ctx: Context): File = File(dir(ctx), "update.apk")
@@ -76,6 +79,7 @@ object ApkInstaller {
             }
             if (conn.responseCode !in 200..299) { lastError = "下载失败（HTTP ${conn.responseCode}）"; return null }
             val total = conn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
+            if (total > MAX_APK_BYTES) { lastError = "安装包过大，已中止下载"; return null }
             val digest = java.security.MessageDigest.getInstance("SHA-256")
             conn.inputStream.use { input ->
                 partial.outputStream().use { output ->
@@ -87,6 +91,8 @@ object ApkInstaller {
                         output.write(buf, 0, read)
                         digest.update(buf, 0, read)
                         done += read
+                        // 没有 Content-Length 的线路也要有硬上限，否则可以把设备存储写满
+                        if (done > MAX_APK_BYTES) { lastError = "安装包过大，已中止下载"; return null }
                         val percent = if (total > 0) ((done * 100) / total).toInt() else -1
                         if (percent != shown) { shown = percent; onProgress(percent) }
                     }
@@ -124,6 +130,8 @@ object ApkInstaller {
             ctx.startActivity(intent)
             true
         } catch (e: Exception) {
+            lastError = "无法打开安装器：" + (e.message ?: e.javaClass.simpleName)
+            android.util.Log.w("StudyOnTV", "Cannot open package installer", e)
             false
         }
     }

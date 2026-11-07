@@ -106,9 +106,9 @@ object HolidayService {
         }
         try {
             require(connection.responseCode in 200..299) { "节假日服务返回 HTTP ${connection.responseCode}" }
-            val bytes = connection.inputStream.use { it.readBytes() }
-            require(bytes.size < 1_000_000) { "节假日数据过大" }
-            return JSONObject(String(bytes, Charsets.UTF_8))
+            if (Net.declaredLength(connection) > 1_000_000) throw IllegalStateException("节假日数据过大")
+            val text = try { Net.text(connection.inputStream, 1_000_000) } catch (_: Net.TooLarge) { throw IllegalStateException("节假日数据过大") }
+            return JSONObject(text)
         } finally { connection.disconnect() }
     }
 }

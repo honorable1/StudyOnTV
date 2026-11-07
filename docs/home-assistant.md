@@ -29,14 +29,18 @@ Home Assistant（下称 HA）管的是**设备层**：电视在哪个信号源�
 
 ## 二、把状态接进 HA（只读）
 
-设备在局域网内提供 HTTP 服务，默认端口 `8099`，`/api/state` 需要验证，但支持用 `X-Admin-Key` 直接带管理密码，不必先换令牌。
+设备在局域网内提供 HTTP 服务，默认端口 `8099`，`/api/state` 需要验证。
 
-先把密码放进 `secrets.yaml`，不要写进会被提交的 YAML 或截图里：
+推荐在家长面板里生成一个**只读集成令牌**（家长管理 → 集成 → 生成只读令牌）。令牌只在生成时显示一次，之后只保存哈希；权限可以随时在面板里收紧或吊销。
+
+把令牌放进 `secrets.yaml`，不要写进会被提交的 YAML 或截图里：
 
 ```yaml
 # secrets.yaml
-studyontv_admin_key: "你的管理密码"
+studyontv_auth: "Bearer sotv_你的令牌"
 ```
+
+> 早期版本支持用 `X-Admin-Key` 直接带管理密码，已经移除：明文密码是不可撤销、不可过期的永久凭据，一旦泄露只能改密码。
 
 然后加一个 REST 传感器：
 
@@ -48,7 +52,7 @@ sensor:
     unique_id: studyontv_remaining
     resource: http://<电视IP>:8099/api/state
     headers:
-      X-Admin-Key: !secret studyontv_admin_key
+      Authorization: !secret studyontv_auth
     value_template: "{{ (value_json.learning.remainingSeconds / 60) | round(0) }}"
     unit_of_measurement: min
     scan_interval: 120

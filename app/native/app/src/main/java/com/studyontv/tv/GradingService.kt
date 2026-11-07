@@ -13,6 +13,7 @@ import java.util.concurrent.Executors
  * 旧版本保存的完整 chat/completions 地址仍然兼容。
  */
 object GradingService {
+    private const val MAX_RESPONSE = 2_000_000
     private val pool = Executors.newFixedThreadPool(2)
     private val running = mutableSetOf<String>()
 
@@ -101,9 +102,10 @@ object GradingService {
             if (key.isNotEmpty()) connection.setRequestProperty("Authorization", "Bearer $key")
             if (body != null) { connection.doOutput = true; connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) } }
             val code = connection.responseCode
+            // 先看声明长度，再边读边限长：被劫持的服务端可以直接返回超大响应把 App 打 OOM
+            if (Net.declaredLength(connection) > MAX_RESPONSE) throw ApiError("响应过大")
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
-            if (bytes.size > 2_000_000) throw ApiError("响应过大")
+            val bytes = try { Net.readLimited(stream, MAX_RESPONSE) } catch (_: Net.TooLarge) { throw ApiError("响应过大") }
             val text = String(bytes, Charsets.UTF_8)
             if (code !in 200..299) {
                 val detail = try { JSONObject(text).let { it.optJSONObject("error")?.optString("message") ?: it.optString("message") ?: it.optString("error") } } catch (_: Exception) { text.take(160) }

@@ -1,21 +1,20 @@
-
-
-
-
-
-
-
-
-
 (function () {
   'use strict';
 
+  // 默认关闭。这是给未成年学生用的应用，向境外统计服务（GA4 / Clarity）传输数据属于
+  // 个人信息出境，必须在家长明确同意后才上报。同意状态存在 localStorage，
+  // 由家长设置页或原生层写入 'sotv_analytics_consent' = '1'。
   var CONFIG = {
-    ga4Id: 'G-561826488',        
-    clarityId: 'z7790sezw1',      
-    enabled: true,
-    debug: false                  
+    ga4Id: 'G-561826488',
+    clarityId: 'z7790sezw1',
+    enabled: false,
+    maskText: true,
+    debug: false
   };
+
+  try {
+    if (window.localStorage.getItem('sotv_analytics_consent') === '1') CONFIG.enabled = true;
+  } catch (e) {}
 
   var queue = [];
   window.SOTV_TRACK = function (name, params) {
@@ -36,7 +35,16 @@
     }
   };
 
-  
+  // 会话录制会把页面上的题干和孩子输入的答案一起录下来，必须做文本遮罩
+  function mask() {
+    if (!CONFIG.maskText) return;
+    try {
+      document.documentElement.setAttribute('data-clarity-mask', 'true');
+      document.body.setAttribute('data-clarity-mask', 'true');
+      if (window.clarity) window.clarity('set', 'maskText', 'true');
+    } catch (e) {}
+  }
+
   if (CONFIG.enabled && CONFIG.ga4Id.indexOf('XXXX') < 0) {
     var ga = document.createElement('script');
     ga.async = true;
@@ -48,8 +56,8 @@
     window.gtag('config', CONFIG.ga4Id, { send_page_view: true });
   }
 
-  
   if (CONFIG.enabled && CONFIG.clarityId.indexOf('abcdef') < 0) {
+    mask();
     (function (c, l, a, r, i, t, y) {
       c[a] = c[a] || function () { (c[a].q = c[a].q || []).push(arguments); };
       t = l.createElement(r); t.async = 1; t.src = 'https://www.clarity.ms/tag/' + i;
@@ -57,8 +65,8 @@
     })(window, document, 'clarity', 'script', CONFIG.clarityId);
   }
 
-  
   document.addEventListener('DOMContentLoaded', function () {
+    if (CONFIG.maskText) mask();
     window.SOTV_TRACK('page_view', {
       page: location.pathname,
       title: document.title,

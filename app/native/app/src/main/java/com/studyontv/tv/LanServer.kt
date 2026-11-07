@@ -11,23 +11,11 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.Executors
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 class LanServer(
     private val context: Context,
@@ -36,8 +24,15 @@ class LanServer(
     private val port: Int = 8099
 ) {
     private var socket: ServerSocket? = null
-    // 浏览器会并发 6 个连接加载面板，线程太少会排队；静态文件已缓存压缩，CPU 开销很小
-    private val pool = Executors.newFixedThreadPool(if (BuildConfig.FLAVOR == "tv") 4 else 6)
+
+    // 浏览器会并发 6 个连接加载面板；线程太少会排队，太多又会在低端盒子上抢 CPU。
+    // 线程池必须有界：无界队列 + 慢连接会让整台设备的内存被吃满（局域网 DoS）。
+    private val workers = if (BuildConfig.FLAVOR == "tv") 3 else 4
+    private val pool = ThreadPoolExecutor(
+        workers, workers, 60L, TimeUnit.SECONDS, ArrayBlockingQueue<Runnable>(32),
+        ThreadFactory { runnable -> Thread(runnable, "sotv-http").apply { isDaemon = true } },
+        ThreadPoolExecutor.AbortPolicy()
+    )
     @Volatile private var running = false
     var boundPort: Int = port
         private set
@@ -50,7 +45,14 @@ class LanServer(
             while (running) {
                 try {
                     val client = socket!!.accept()
-                    pool.execute { handle(client) }
+                    try {
+                        pool.execute { handle(client) }
+                    } catch (_: RejectedExecutionException) {
+                        try {
+                            client.getOutputStream().use { it.write("HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray()) }
+                        } catch (_: Exception) { }
+                        try { client.close() } catch (_: Exception) { }
+                    }
                 } catch (e: Exception) {
                     if (running) Thread.sleep(50)
                 }
@@ -70,10 +72,10 @@ class LanServer(
         null
     }
 
-    
     private fun handle(client: Socket) {
         client.use { c ->
             c.soTimeout = 8000
+            val started = System.currentTimeMillis()
             try {
                 val input = BufferedInputStream(c.getInputStream())
                 val requestLine = readLine(input) ?: return
@@ -84,47 +86,95 @@ class LanServer(
                 val query = parts[1].substringAfter('?', "")
 
                 val headers = HashMap<String, String>()
+                var headerCount = 0
                 while (true) {
                     val line = readLine(input) ?: break
                     if (line.isEmpty()) break
+                    if (++headerCount > MAX_HEADERS) return reply(c.getOutputStream(), 431, "text/plain; charset=utf-8", "请求头过多".toByteArray())
                     val idx = line.indexOf(':')
                     if (idx > 0) headers[line.substring(0, idx).trim().lowercase()] = line.substring(idx + 1).trim()
                 }
+                // 逐字节慢速发送也能一直续命，这里给整个请求一个硬上限
+                if (System.currentTimeMillis() - started > REQUEST_TIMEOUT_MS) return reply(c.getOutputStream(), 408, "text/plain; charset=utf-8", "请求超时".toByteArray())
                 val length = headers["content-length"]?.toIntOrNull() ?: 0
-                if (length !in 0..4000000) return reply(c.getOutputStream(), 413, "text/plain", "Request too large".toByteArray())
+                if (length !in 0..MAX_BODY) return reply(c.getOutputStream(), 413, "text/plain; charset=utf-8", "Request too large".toByteArray())
                 val body = if (length > 0) readBody(input, length) else ""
 
                 val out = c.getOutputStream()
                 if (method == "OPTIONS") return reply(out, 204, null, null)
                 val local = c.inetAddress?.isLoopbackAddress ?: false
                 route(method, path, query, headers, body, out, local)
+            } catch (e: LineTooLongException) {
+                try { reply(c.getOutputStream(), 431, "text/plain; charset=utf-8", "请求头过长".toByteArray()) } catch (_: Exception) { }
             } catch (e: Exception) {
-                
+                Diag.warn("HTTP", "请求处理失败：" + (e.message ?: e.javaClass.simpleName))
             }
         }
     }
 
-    private fun route(method: String, path: String, query: String, headers: Map<String, String>, body: String, out: OutputStream, local: Boolean) {
+    /** 页面只允许调用这些设备侧接口；改规则、改密码、签发令牌必须走家长登录 */
+    private val devicePaths = setOf(
+        "/api/state", "/api/hello", "/api/event",
+        "/api/quiz/start", "/api/quiz/answer", "/api/quiz/skip", "/api/quiz/review"
+    )
+
+    /**
+     * WebView 内部调用：直接走路由，不经过 TCP，也不把任何凭据交给 JS。
+     * 返回 JSON 字符串（HTTP 头已剥离），异常同样以 JSON 返回。
+     */
+    fun localJson(method: String, path: String, body: String): String {
+        val clean = path.substringBefore('?')
+        if (clean !in devicePaths)
+            return JSONObject().put("error", "forbidden").put("message", "这个接口不能从页面调用").toString()
+        val out = ResponseBuffer()
+        return try {
+            route(method, clean, path.substringAfter('?', ""), emptyMap(), body, out, true, "127.0.0.1", true)
+            out.body().ifEmpty { JSONObject().put("error", "empty_response").toString() }
+        } catch (e: Exception) {
+            Diag.warn("HTTP", "本地调用 $method $clean 失败：" + (e.message ?: e.javaClass.simpleName))
+            JSONObject().put("error", "bad_request").put("message", e.message ?: "请求失败").toString()
+        }
+    }
+
+    private fun route(method: String, path: String, query: String, headers: Map<String, String>, body: String,
+                      out: OutputStream, local: Boolean, ip: String = "", trusted: Boolean = false) {
         val q = if (query.isEmpty()) emptyMap() else query.split("&").associate {
             val kv = it.split("=", limit = 2)
-            kv[0] to java.net.URLDecoder.decode(kv.getOrElse(1) { "" }, "UTF-8")
+            // 键和值都要解码，非法转义不能让整个请求炸掉
+            val name = runCatching { java.net.URLDecoder.decode(kv[0], "UTF-8") }.getOrDefault(kv[0])
+            val value = runCatching { java.net.URLDecoder.decode(kv.getOrElse(1) { "" }, "UTF-8") }.getOrDefault("")
+            name to value
         }
-        val deviceAccess = local && headers["x-device-token"] == AdminAuth.deviceToken
+        val deviceAccess = trusted || (local && headers["x-device-token"] == AdminAuth.deviceToken)
         val token = headers["authorization"]?.removePrefix("Bearer ") ?: headers["x-admin-token"]
+
+        if (path == "/api/auth/challenge" && method == "GET") {
+            // 一次性随机数：客户端用 HMAC 回应，密码本身不上网
+            val challenge = AdminAuth.challenge(context, ip)
+                ?: return json(out, 503, err("challenge_unavailable").put("message", "请使用管理密码登录"))
+            return json(out, 200, challenge)
+        }
         if (path == "/api/auth" && method == "POST") {
             val input = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
             val remember = input.optBoolean("remember")
-            val session = AdminAuth.login(context, input.optString("passphrase"), remember)
-            return if (session == null) json(out, 401, err("管理密码错误，连续错误 5 次后需等待一分钟"))
-                else json(out, 200, JSONObject().put("token", session).put("expiresIn", if (remember) 30 * 86400 else 43200))
+            val session = AdminAuth.login(context,
+                input.optString("passphrase").takeIf { it.isNotEmpty() },
+                input.optString("challenge").takeIf { it.isNotEmpty() },
+                input.optString("proof").takeIf { it.isNotEmpty() }, remember, ip)
+            if (session == null) {
+                val wait = AdminAuth.blockedSeconds(context, ip)
+                val message = if (wait > 0) "密码错误次数过多，请 $wait 秒后再试" else "管理密码错误"
+                return json(out, 401, err("wrong_password").put("message", message).put("retryAfter", wait))
+            }
+            return json(out, 200, JSONObject().put("token", session).put("expiresIn", if (remember) 30 * 86400 else 43200))
         }
         if (path.startsWith("/api/") && path != "/api/hello") {
-            val adminKey = headers["x-admin-key"]
             val integrationToken = token?.takeIf { it.startsWith("sotv_") }
             if (integrationToken != null && !IntegrationAuth.takeBudget())
                 return json(out, 429, err("too_many_requests").put("message", "请求太频繁，请稍后再试"))
             val integration = IntegrationAuth.verify(context, integrationToken)
-            val parent = AdminAuth.valid(token) || (adminKey != null && AdminAuth.verify(context, adminKey))
+            // 只有会话令牌（/api/auth 换取，且与来源地址绑定）；明文密码不再作为凭据使用
+            val parent = AdminAuth.valid(token, ip)
             if (!deviceAccess && !parent && integration == null) return json(out, 401, err("unauthorized"))
             // 集成令牌只能访问明确列出的接口；不能改规则、题库、密码或权限本身。
             if (integration != null && !deviceAccess && !parent) {
@@ -242,14 +292,18 @@ class LanServer(
             }
             path == "/api/password" && method == "POST" -> {
                 val input = JSONObject(body)
-                if (!AdminAuth.verify(context, input.optString("current"))) return json(out, 403, err("wrong_password").put("message", "当前密码不正确，连续错误 5 次后需等待一分钟"))
+                if (!AdminAuth.verify(context, input.optString("current"), ip)) {
+                    val wait = AdminAuth.blockedSeconds(context, ip)
+                    val message = if (wait > 0) "密码错误次数过多，请 $wait 秒后再试" else "当前密码不正确"
+                    return json(out, 403, err("wrong_password").put("message", message).put("retryAfter", wait))
+                }
                 AdminAuth.setPassword(context, input.optString("password"))
                 return json(out, 200, JSONObject().put("ok", true))
             }
             path == "/api/logout" && method == "POST" -> { AdminAuth.forget(context, token); return json(out, 200, JSONObject().put("ok", true)) }
             path == "/api/remote" && method == "POST" -> {
                 // 家长会话，或带「控制」权限的集成令牌；学习页的设备令牌不能调用
-                val parent = AdminAuth.valid(token)
+                val parent = AdminAuth.valid(token, ip)
                 val control = IntegrationAuth.verify(context, token)?.control == true
                 if (!parent && !control) return json(out, 403, err("forbidden").put("message", "请先用管理密码登录"))
                 val input = JSONObject(body.ifEmpty { "{}" })
@@ -353,18 +407,20 @@ class LanServer(
             return json(out, 400, JSONObject().put("error", "bad_request").put("message", e.message ?: "请求格式错误"))
         }
 
-        
+        // 未匹配的 /api/*：明确返回 404，而不是把首页当 JSON 返回（否则前端只会报「连接设备失败」）
+        if (path.startsWith("/api/")) return json(out, 404, err("not_found"))
         if (method != "GET") return json(out, 405, err("method_not_allowed"))
         serveStatic(path, out, headers["accept-encoding"]?.contains("gzip") == true, headers["if-none-match"])
     }
 
-
-
-    
     /** gzip 后的静态文件缓存（资源随 APK 固定不变，压缩一次即可） */
     private val gzipCache = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
     // 包含安装时间：同版本号的重新安装 / 调试构建也会让浏览器拿到新页面
-    private val etag = "\"" + BuildConfig.VERSION_CODE + "-" + (try { context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime } catch (_: Exception) { 0L }) + "\""
+    private val buildStamp = try { context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime } catch (_: Exception) { 0L }
+
+    /** ETag 必须与具体资源绑定，否则 A 资源的校验结果会被误用到 B 资源上（304 误判） */
+    private fun etagFor(assetPath: String): String =
+        "\"" + BuildConfig.VERSION_CODE + "-" + buildStamp + "-" + Integer.toHexString(assetPath.hashCode()) + "\""
 
     private fun serveStatic(path: String, out: OutputStream, gzip: Boolean, ifNoneMatch: String?) {
         val (assetPath, contentType) = when {
@@ -376,9 +432,10 @@ class LanServer(
             else -> "web/index.html" to "text/html; charset=utf-8"
         }
         if (assetPath.contains("..")) return reply(out, 404, "text/plain; charset=utf-8", "404".toByteArray())
-        // 带哈希的打包文件和字体可以长期缓存；页面本身每次校验（ETag = 版本号，升级后自动失效）
+        // 带哈希的打包文件和字体可以长期缓存；页面本身每次校验（ETag = 版本号 + 资源路径，升级后自动失效）
         val hashed = Regex("-[A-Za-z0-9_-]{8}\\.(js|css)$").containsMatchIn(assetPath) || assetPath.contains("/vendor/")
         val cache = if (hashed) "public, max-age=31536000, immutable" else "no-cache"
+        val etag = etagFor(assetPath)
         if (ifNoneMatch == etag) return reply(out, 304, null, null, mapOf("ETag" to etag, "Cache-Control" to cache))
         try {
             val compressible = contentType.startsWith("text/") || contentType.contains("javascript") || contentType.contains("json") || contentType.contains("svg")
@@ -410,7 +467,6 @@ class LanServer(
         else -> "application/octet-stream"
     }
 
-    
     private fun json(out: OutputStream, code: Int, obj: JSONObject) =
         reply(out, code, "application/json; charset=utf-8", obj.toString().toByteArray())
 
@@ -427,7 +483,7 @@ class LanServer(
         extra.forEach { (k, v) -> head.append(k).append(": ").append(v).append("\r\n") }
         head.append("Access-Control-Allow-Origin: *\r\n")
         head.append("Access-Control-Allow-Methods: GET,POST,PUT,DELETE,OPTIONS\r\n")
-        head.append("Access-Control-Allow-Headers: Content-Type,X-Admin-Token,Authorization,X-Admin-Key,X-Device-Token\r\n")
+        head.append("Access-Control-Allow-Headers: Content-Type,Authorization,X-Admin-Token\r\n")
         head.append("Access-Control-Allow-Private-Network: true\r\n")
         head.append("\r\n")
         out.write(head.toString().toByteArray())
@@ -436,14 +492,17 @@ class LanServer(
     }
 
     private fun reason(code: Int) = when (code) {
-        200 -> "OK"; 204 -> "No Content"; 304 -> "Not Modified"; 400 -> "Bad Request"; 401 -> "Unauthorized"; 403 -> "Forbidden"
-        301 -> "Moved Permanently"; 404 -> "Not Found"; 405 -> "Method Not Allowed"; else -> "OK"
+        200 -> "OK"; 204 -> "No Content"; 301 -> "Moved Permanently"; 304 -> "Not Modified"
+        400 -> "Bad Request"; 401 -> "Unauthorized"; 403 -> "Forbidden"; 404 -> "Not Found"
+        405 -> "Method Not Allowed"; 408 -> "Request Timeout"; 413 -> "Payload Too Large"
+        429 -> "Too Many Requests"; 431 -> "Request Header Fields Too Large"; 503 -> "Service Unavailable"
+        else -> "OK"
     }
 
-    
-    private fun readLine(input: BufferedInputStream): String? {
+    private class LineTooLongException : Exception("请求头过长")
+
+    private fun readLine(input: BufferedInputStream, limit: Int = MAX_LINE): String? {
         val buf = ByteArrayOutputStream()
-        var prev = -1
         while (true) {
             val b = input.read()
             if (b == -1) return if (buf.size() == 0) null else buf.toString("UTF-8")
@@ -451,8 +510,8 @@ class LanServer(
                 val bytes = buf.toByteArray()
                 return String(bytes, 0, if (bytes.isNotEmpty() && bytes[bytes.size - 1] == '\r'.code.toByte()) bytes.size - 1 else bytes.size, Charsets.UTF_8)
             }
+            if (buf.size() >= limit) throw LineTooLongException()
             buf.write(b)
-            prev = b
         }
     }
 
@@ -467,7 +526,25 @@ class LanServer(
         return String(buf, 0, read, Charsets.UTF_8)
     }
 
-    
+    /** 只保留 body 的响应缓冲：给 WebView 内部调用复用同一套路由逻辑 */
+    private class ResponseBuffer : OutputStream() {
+        private val buf = ByteArrayOutputStream()
+        override fun write(b: Int) { buf.write(b) }
+        override fun write(b: ByteArray) { buf.write(b) }
+        override fun write(b: ByteArray, off: Int, len: Int) { buf.write(b, off, len) }
+        fun body(): String {
+            val bytes = buf.toByteArray()
+            var i = 0
+            while (i + 3 < bytes.size) {
+                if (bytes[i] == '\r'.code.toByte() && bytes[i + 1] == '\n'.code.toByte() &&
+                    bytes[i + 2] == '\r'.code.toByte() && bytes[i + 3] == '\n'.code.toByte())
+                    return String(bytes, i + 4, bytes.size - i - 4, Charsets.UTF_8)
+                i++
+            }
+            return ""
+        }
+    }
+
     fun localIp(): String? = try {
         NetworkInterface.getNetworkInterfaces().toList()
             .filter { it.isUp && !it.isLoopback }
@@ -477,5 +554,12 @@ class LanServer(
             ?.hostAddress
     } catch (e: Exception) {
         null
+    }
+
+    private companion object {
+        const val MAX_LINE = 8 * 1024
+        const val MAX_HEADERS = 100
+        const val MAX_BODY = 4_000_000
+        const val REQUEST_TIMEOUT_MS = 15_000L
     }
 }
