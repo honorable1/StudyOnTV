@@ -34,6 +34,8 @@ class LanServer(
         ThreadPoolExecutor.AbortPolicy()
     )
     @Volatile private var running = false
+    /** accept() 连续失败次数：只在第 1 次和每 50 次记录，避免端口被占用时刷爆日志 */
+    private var acceptFailures = 0
     var boundPort: Int = port
         private set
 
@@ -45,6 +47,7 @@ class LanServer(
             while (running) {
                 try {
                     val client = socket!!.accept()
+                    acceptFailures = 0
                     try {
                         pool.execute { handle(client) }
                     } catch (_: RejectedExecutionException) {
@@ -54,7 +57,12 @@ class LanServer(
                         try { client.close() } catch (_: Exception) { }
                     }
                 } catch (e: Exception) {
-                    if (running) Thread.sleep(50)
+                    if (running) {
+                        acceptFailures++
+                        if (acceptFailures == 1 || acceptFailures % 50 == 0)
+                            Diag.warn("HTTP", "accept 已连续失败 $acceptFailures 次：" + (e.message ?: e.javaClass.simpleName))
+                        Thread.sleep(50)
+                    }
                 }
             }
         }.apply { isDaemon = true }.start()

@@ -372,32 +372,49 @@
     if (!el) el = document.querySelector('.screen.active .focused') || document.querySelector('.focused');
     if (!el) return;
     if (el.hasAttribute('data-opt')) return choose(+el.getAttribute('data-opt'));
-    var action = el.getAttribute('data-action');
-    if (action === 'submit') submit();
-    if (action === 'next') proceed();
-    if (action === 'review-continue' && !state.busy) {
-      state.busy = true;
-      request('/api/quiz/review', { reviewId: state.review.reviewId }, function (error, result) {
-        state.busy = false;
-        if (error) { toast(error); return; }
-        var finished = state.review.result.finished && state.review.result.passed;
-        state.reviewed = false;
-        if (finished && !result.status.reason && result.status.remainingSeconds > 0) nativeCall('exitToLauncher');
-        else start();
-      });
+    // 用 switch 而不是一串独立 if：action 是单值，串行判断既慢又容易在新增分支时漏掉 return
+    switch (el.getAttribute('data-action')) {
+      case 'submit': return submit();
+      case 'next': return proceed();
+      case 'review-continue':
+        if (state.busy) return;
+        state.busy = true;
+        return request('/api/quiz/review', { reviewId: state.review.reviewId }, function (error, result) {
+          state.busy = false;
+          if (error) { toast(error); return; }
+          var finished = state.review.result.finished && state.review.result.passed;
+          state.reviewed = false;
+          if (finished && !result.status.reason && result.status.remainingSeconds > 0) nativeCall('exitToLauncher');
+          else start();
+        });
+      case 'voice': return nativeCall('answerInput', [true]);
+      case 'handwrite': return nativeCall('answerInput', [false]);
+      case 'type-answer':
+        if (state.busy) return;
+        return nativeCall('answerText', [state.draft ? state.draft.text : '', state.round ? state.round.question.q : '']);
+      case 'update-go':
+        var u = window.currentUpdate;
+        if (u) nativeCall('installUpdate', [u.url, u.latest, u.notes || '']);
+        return;
+      case 'update-close':
+        $('updateTip').className = 'update-tip';
+        try { if (window.currentUpdate) window.localStorage.setItem('sotv_update_dismissed', window.currentUpdate.latest); } catch (e) {}
+        if (el.classList.contains('focused')) focusDefault();
+        return;
+      case 'permissions': return nativeCall('openPermissions');
+      case 'password': return nativeCall('changePassword');
+      case 'clear-drawing': state.draft.drawing = ''; return renderQuestion();
+      case 'read-aloud': try { nativeCall('readAloud', [state.round ? state.round.question.q : '']); } catch (e) {} return;
+      case 'retry': return start();
+      case 'skip-review':
+        return request('/api/quiz/skip', {}, function (error, result) {
+          if (error) { toast(error); return; }
+          state.awaiting = false; state.reviewed = false; state.busy = false; start();
+        });
+      case 'return-learning': return nativeCall('backToQuiz');
+      case 'home': return nativeCall('exitToLauncher');
+      case 'quiz': return state.screen === 'pair' ? nativeCall('backToQuiz') : start();
     }
-    if (action === 'voice' || action === 'handwrite') nativeCall('answerInput', [action === 'voice']);
-    if (action === 'type-answer' && !state.busy) nativeCall('answerText', [state.draft ? state.draft.text : '', state.round ? state.round.question.q : '']);
-    if (action === 'update-go') { var u = window.currentUpdate; if (u) nativeCall('installUpdate', [u.url, u.latest, u.notes || '']); }
-    if (action === 'update-close') { $('updateTip').className = 'update-tip'; try { if (window.currentUpdate) window.localStorage.setItem('sotv_update_dismissed', window.currentUpdate.latest); } catch (e) {} if (el.classList.contains('focused')) focusDefault(); }
-    if (action === 'permissions' || action === 'password') nativeCall(action === 'permissions' ? 'openPermissions' : 'changePassword');
-    if (action === 'clear-drawing') { state.draft.drawing = ''; renderQuestion(); }
-    if (action === 'read-aloud') { try { nativeCall('readAloud', [state.round ? state.round.question.q : '']); } catch(e) {} }
-    if (action === 'retry') start();
-    if (action === 'skip-review') { request('/api/quiz/skip', {}, function (error, result) { if (error) { toast(error); return; } state.awaiting = false; state.reviewed = false; state.busy = false; start(); }); }
-    if (action === 'return-learning') nativeCall('backToQuiz');
-    if (action === 'home') nativeCall('exitToLauncher');
-    if (action === 'quiz') { if (state.screen === 'pair') nativeCall('backToQuiz'); else start(); }
   }
   function route() {
     window.clearTimeout(nextTimer); state.busy = false; hideFeedback();

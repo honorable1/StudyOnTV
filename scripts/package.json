@@ -1,0 +1,15 @@
+{
+  "name": "studyontv-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "仓库维护脚本：生成更新清单、README 截图与示意图。三个脚本都是零 npm 依赖的普通 Node 模块，只需要本机有 Chrome（截图脚本可用 CHROME_PATH 指定）。",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "manifest": "node make-update-manifest.mjs",
+    "shots": "node make-shots.mjs",
+    "how-it-works": "node gen-how-it-works.mjs"
+  }
+}

@@ -214,7 +214,9 @@ object AdminAuth {
             else verify(context, passphrase ?: "", source)
         if (!ok) return null
         val now = System.currentTimeMillis()
+        sweepSessions(now)
         sessions.entries.removeAll { it.value < now }
+        lastSweepAt = now
         val token = randomHex(32)
         val expires = now + if (remember) REMEMBER_MS else SESSION_MS
         sessions[token] = expires
@@ -257,12 +259,25 @@ object AdminAuth {
     fun recentlyVerified(): Boolean = verifiedAt > 0 && android.os.SystemClock.elapsedRealtime() - verifiedAt < 120000
 
     /**
+     * 过期会话清理。之前只在 login() 时扫一遍，长时间不登录的会话会一直挂在 map 里
+     * （每个都是一条 64 字符 key + 一条 IP），改密码后也仍占内存。改为每 5 分钟最多扫一次。
+     */
+    @Volatile private var lastSweepAt = 0L
+    private fun sweepSessions(now: Long) {
+        if (now - lastSweepAt < 5 * 60_000) return
+        lastSweepAt = now
+        val dead = sessions.entries.filter { it.value < now }.map { it.key }
+        dead.forEach { sessions.remove(it); sessionIp.remove(it) }
+    }
+
+    /**
      * 会话校验。令牌同时与来源地址绑定：同一 WiFi 下即使被嗅探到令牌，换一台设备也无法重放。
      * @param source 客户端地址；null 表示不校验来源（仅用于本机内部调用）
      */
     fun valid(token: String?, source: String? = null): Boolean {
         if (token == null || token.length != 64) return false
         val now = System.currentTimeMillis()
+        sweepSessions(now)
         val expires = sessions[token]
         if (expires != null && expires > now) {
             val bound = sessionIp[token]

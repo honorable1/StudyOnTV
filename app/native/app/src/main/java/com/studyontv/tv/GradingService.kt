@@ -36,7 +36,7 @@ object GradingService {
     fun settings(store: LocalStore, includeKey: Boolean = false): JSONObject {
         val result = JSONObject().put("mode", "manual").put("provider", "deepseek").put("endpoint", "https://api.deepseek.com/v1")
             .put("model", "deepseek-chat").put("vision", false).put("passScore", 60)
-        val saved = JSONObject(store.get("grading_settings", "{}"))
+        val saved = jsonObject(store.get("grading_settings", "{}"))
         saved.keys().forEach { result.put(it, saved.get(it)) }
         result.put("hasKey", result.optString("apiKey").isNotEmpty())
         result.put("chatUrl", try { chatUrl(result.optString("endpoint")) } catch (_: Exception) { "" })

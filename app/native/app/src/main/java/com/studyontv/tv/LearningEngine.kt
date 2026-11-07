@@ -351,7 +351,7 @@ class LearningEngine(private val store: LocalStore) {
         val review = store.review(reviewId) ?: throw IllegalArgumentException("待批题目不存在")
         require(review.getString("state") != "skipped") { "这道题已被跳过，不再批改" }
         if (review.getString("state") == "graded") return review
-        val settings = JSONObject(store.get("grading_settings", "{}"))
+        val settings = jsonObject(store.get("grading_settings", "{}"))
         val threshold = settings.optDouble("passScore", 60.0)
         val correct = score >= threshold
         val quality = when { !correct -> 1; score >= 90 -> 5; score >= 75 -> 4; else -> 3 }

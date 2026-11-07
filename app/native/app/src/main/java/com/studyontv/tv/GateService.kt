@@ -218,9 +218,38 @@ class GateService : Service() {
         } catch (_: Exception) { null }
     }
 
+    /**
+     * 输入法包名从系统设置里动态读取，而不是用 contains("inputmethod") 糊弄：
+     * 子串匹配会让 com.example.inputmethodhelper 这类无关应用整块逃逸管控，
+     * 而写死白名单又会在各家电视盒子上误拦真正的输入法（打不了字）。
+     */
+    private val imePackages: Set<String> by lazy {
+        try {
+            val raw = listOf(
+                android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ENABLED_INPUT_METHODS),
+                android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.DEFAULT_INPUT_METHOD)
+            ).filterNotNull().joinToString(":")
+            raw.split(':')
+                .map { it.trim().substringBefore('/') }
+                .filter { it.isNotEmpty() }
+                .toSet()
+        } catch (_: Exception) { emptySet() }
+    }
+
+    /** 系统安装器 / 权限控制器：包名末段精确匹配，避免 com.evil.packageinstaller2 也能豁免 */
+    private fun isSystemComponent(pkg: String): Boolean {
+        val tail = pkg.substringAfterLast('.')
+        return tail == "packageinstaller" || tail == "permissioncontroller"
+    }
+
+    /** 动态列表拿不到时（个别电视盒子判空）退回粗匹配，宁可放宽也不能让孩子无法输入 */
+    private fun isIme(pkg: String): Boolean =
+        if (imePackages.isNotEmpty()) pkg in imePackages
+        else pkg.contains("inputmethod") || pkg.endsWith(".keyboard")
+
     private fun exempt(pkg: String, includeLauncher: Boolean = true): Boolean {
-        if (pkg == packageName || pkg == "com.android.systemui" || pkg == "android" || pkg.contains("packageinstaller")) return true
-        if (pkg.contains("permissioncontroller") || pkg.contains("inputmethod") || pkg.contains("keyboard")) return true
+        if (pkg == packageName || pkg == "com.android.systemui" || pkg == "android" || isSystemComponent(pkg)) return true
+        if (isIme(pkg)) return true
         if (pkg == systemSettingsPackage || pkg in setOf("com.android.settings", "com.android.tv.settings", "com.google.android.tv.settings", "com.google.android.dialer", "com.android.dialer", "com.android.phone", "com.android.server.telecom", "com.android.emergency")) return true
         if (!includeLauncher) return false
         return pkg == launcherPackage || Foreground.isLauncher(pkg)

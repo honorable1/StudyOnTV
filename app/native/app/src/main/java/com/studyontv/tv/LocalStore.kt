@@ -122,6 +122,8 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
         writableDatabase.insertWithOnConflict("kv", null, ContentValues().apply {
             put("k", key); put("v", value)
         }, SQLiteDatabase.CONFLICT_REPLACE)
+        // 写配置就让缓存失效；用版本号而不是回读原始串，避免每次 config() 都查一次库
+        if (key == "config") configVersion.incrementAndGet()
     }
 
     fun adminToken(): String = get("admin_token").ifEmpty {
@@ -130,20 +132,23 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
 
     /**
      * 配置的解析结果会缓存。GateService 每秒调用多次 config()，每次都重新解析 JSON、
-     * 跑 3 条正则、归一化周表，在电视上是明显的浪费；配置只在 saveConfig() 时变化，
-     * 所以用 kv 里的原始字符串作为缓存键即可正确失效。
+     * 跑 3 条正则、归一化周表，在电视上是明显的浪费。
+     *
+     * 失效依据是 [configVersion]：只有 set("config") 会改变它，所以不必再回读 kv 里的原始串
+     * （回读本身也是一次 SQL 查询，占了这个热路径的大头）。
      * 注意：返回的对象是共享实例，调用方不得修改（需要改请先复制）。
      */
-    @Volatile private var cachedConfigRaw: String? = null
+    private val configVersion = java.util.concurrent.atomic.AtomicInteger(0)
+    @Volatile private var cachedConfigVersion = -1
     @Volatile private var cachedConfig: JSONObject? = null
 
     fun config(): JSONObject {
-        val raw = get("config", "")
+        val version = configVersion.get()
         val cached = cachedConfig
-        if (cached != null && cachedConfigRaw == raw) return cached
-        val value = buildConfig(raw)
+        if (cached != null && cachedConfigVersion == version) return cached
+        val value = buildConfig(get("config", ""))
         cachedConfig = value
-        cachedConfigRaw = raw
+        cachedConfigVersion = version
         return value
     }
 
@@ -160,7 +165,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "studyontv.db", n
             .put("holidayMode", "sunday")
             .put("quizSubjects", JSONArray()).put("quizLevels", JSONArray())
             .put("version", 1)
-        val saved = try { JSONObject(raw.ifEmpty { "{}" }) } catch (e: Exception) { JSONObject() }
+        val saved = jsonObject(raw)
         saved.keys().forEach { defaults.put(it, saved.get(it)) }
         // 旧版的四种配色主题合并为深色 / 浅色
         defaults.put("theme", when (defaults.optString("theme")) { "light", "daylight" -> "light"; "system" -> "system"; "dark", "midnight", "nord", "amber" -> "dark"; else -> if (BuildConfig.FLAVOR == "tv") "dark" else "system" })
