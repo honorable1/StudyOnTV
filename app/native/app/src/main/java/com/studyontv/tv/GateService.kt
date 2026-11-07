@@ -85,10 +85,11 @@ class GateService : Service() {
         if (snapshot != lastDiag) { lastDiag = snapshot; Diag.info("Gate", snapshot) }
         if ((protecting || settingsBlocked) && gateReason.isNotEmpty() && now - lastGate > 1800 && !hasGate()) {
             lastGate = now
-            // 斐讯 T1 等 SDK < 26 的超老盒子悬浮 WebView 易黑屏，走全屏 Activity 更稳定。
-            // Android 8+（SDK 26+）TYPE_APPLICATION_OVERLAY 稳定，统一走悬浮层，HOME 键不会关掉它。
+            // 斐讯 T1 等 SDK < 26 的超老盒子悬浮 WebView 易黑屏，优先走全屏 Activity。
+            // 悬浮窗有权限时：无障碍覆盖层 → 悬浮 WebView；无权限时直接兜底 GateActivity（#49）。
             val shown = if (Build.VERSION.SDK_INT < 26) false
-                else WatchAccessibilityService.showGate(gateReason) || (canOverlay && overlay.show(gateReason))
+                else if (canOverlay) WatchAccessibilityService.showGate(gateReason) || overlay.show(gateReason)
+                else WatchAccessibilityService.showGate(gateReason)  // 无悬浮窗时无障碍仍可用
             if (shown) lastGateError = ""
             if (!shown) {
                 Diag.warn("Gate", "cannot show gate reason=$gateReason overlay=$canOverlay error=$lastGateError")
@@ -149,6 +150,7 @@ class GateService : Service() {
         if (!p.getBoolean("overlay_was_granted", false)) return
         p.edit().putBoolean("overlay_was_granted", false).apply()
         Diag.warn("Gate", "overlay permission was revoked by system")
+        BuglyInit.reportPermissionLost("SYSTEM_ALERT_WINDOW", "revoked by system firmware")
         try {
             val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             val channelId = "sotv_gate_alert"
@@ -185,6 +187,7 @@ class GateService : Service() {
                 .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
                 .setContentIntent(pi).setAutoCancel(true).setOnlyAlertOnce(false).build())
             Diag.warn("Gate", "accessibility lost after restart, notified parent")
+            BuglyInit.reportPermissionLost("ACCESSIBILITY_SERVICE", "removed by system after process kill")
         } catch (e: Exception) { Diag.error("Gate", "cannot notify accessibility lost", e) }
     }
 

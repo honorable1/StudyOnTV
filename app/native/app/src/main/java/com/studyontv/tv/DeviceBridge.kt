@@ -62,17 +62,19 @@ open class DeviceBridge(protected val activity: Activity, private val connection
         if (status.getString("reason").isNotEmpty() || (status.optLong("remainingSeconds") <= 0 && !status.optBoolean("free"))) return
         activity.runOnUiThread {
             GateService.hideGates()
-            // 个别电视（如小米）把 HOME 指向带私有权限的桌面，直接 startActivity 会抛 SecurityException。
-            // 失败时退回隐藏本任务，绝不能因为回桌面把主进程带崩。
-            val openedHome = try {
-                activity.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                true
-            } catch (e: Exception) {
-                Diag.error("UI", "HOME intent rejected, fallback to moveTaskToBack", e)
-                false
+            // 答题结束后优先 moveTaskToBack，让之前的应用（如腾讯视频）重新回到前台。
+            // 仅在 GateActivity 场景（全屏管控页）才主动跳桌面，因为它本身就是管控页不应保留在栈里。
+            if (activity is GateActivity) {
+                activity.finish()
+                try {
+                    activity.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (e: Exception) {
+                    Diag.error("UI", "HOME intent rejected", e)
+                }
+            } else {
+                // MainActivity / 普通场景：退到后台，之前的视频 App 自动回到前台
+                activity.moveTaskToBack(true)
             }
-            if (!openedHome) activity.moveTaskToBack(true)
-            if (activity is GateActivity) activity.finish()
         }
     }
 

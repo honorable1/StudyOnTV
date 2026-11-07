@@ -40,6 +40,17 @@ object BuglyInit {
         init(context)
     }
 
+    /** 上报权限丢失等非致命事件（不需要用户同意，不含个人数据） */
+    fun reportPermissionLost(name: String, detail: String) {
+        if (!initialized) return
+        try {
+            com.tencent.bugly.crashreport.CrashReport.postCatchedException(
+                RuntimeException("PermissionLost: $name — $detail")
+            )
+            Diag.warn("Bugly", "reported permission loss: $name")
+        } catch (e: Exception) { Diag.warn("Bugly", "reportException failed: ${e.message}") }
+    }
+
     /** 撤回同意：下次启动生效 */
     fun revoke(context: Context) {
         Prefs.setBuglyConsent(context, false)

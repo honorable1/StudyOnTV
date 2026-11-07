@@ -72,16 +72,31 @@ object ApkInstaller {
         var conn: HttpURLConnection? = null
         try {
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 8000
-                readTimeout = 15000
+                connectTimeout = 12000
+                readTimeout = 60000   // 蒲公英 APK 文件大，慢网需要更长时间
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", Pgyer.USER_AGENT)
+                setRequestProperty("Accept", "*/*")
             }
-            if (conn.responseCode !in 200..299) { lastError = "下载失败（HTTP ${conn.responseCode}）"; return null }
-            val total = conn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
+            // 手动跟随重定向（部分 HTTP→HTTPS 或 302 跳转 HttpURLConnection 不处理）
+            var finalConn: HttpURLConnection = conn!!
+            var redirectCode = finalConn.responseCode
+            var redirectCount = 0
+            while (redirectCode in 301..303 && redirectCount++ < 5) {
+                val loc = finalConn.getHeaderField("Location") ?: break
+                finalConn.disconnect()
+                finalConn = URL(loc).openConnection() as HttpURLConnection
+                finalConn.connectTimeout = 12000; finalConn.readTimeout = 60000
+                finalConn.instanceFollowRedirects = true
+                finalConn.setRequestProperty("User-Agent", Pgyer.USER_AGENT)
+                redirectCode = finalConn.responseCode
+            }
+            conn = finalConn
+            if (redirectCode !in 200..299) { lastError = "下载失败（HTTP $redirectCode）"; return null }
+            val total = finalConn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
             if (total > MAX_APK_BYTES) { lastError = "安装包过大，已中止下载"; return null }
             val digest = java.security.MessageDigest.getInstance("SHA-256")
-            conn.inputStream.use { input ->
+            conn!!.inputStream.use { input ->
                 partial.outputStream().use { output ->
                     val buf = ByteArray(64 * 1024)
                     var read: Int

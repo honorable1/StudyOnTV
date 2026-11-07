@@ -107,6 +107,18 @@ class OnboardingActivity : Activity() {
         }
         list.addView(TvUi.text(this, if (tv) "部分电视没有“电池优化”，可在系统“应用管理”里允许自启动。" else "部分手机还需要在系统设置里允许“自启动”或“后台活动”。", if (tv) 13f else 12f, p.text3),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6); leftMargin = dp(4) })
+        // 针对常见品牌给出更具体的自启动引导
+        val brand = android.os.Build.MANUFACTURER.lowercase()
+        val brandTip = when {
+            brand.contains("tcl") -> "TCL 电视：设置 → 应用 → 题了个题 → 自启动，开启「允许自启动」"
+            brand.contains("hisense") || brand.contains("vidaa") -> "海信电视：设置 → 应用管理 → 题了个题 → 权限 → 允许自启动"
+            brand.contains("skyworth") || brand.contains("coocaa") -> "创维 / 酷开：设置 → 应用 → 题了个题 → 自启动权限，设为允许"
+            brand.contains("xiaomi") || brand.contains("redmi") -> "小米电视：设置 → 应用 → 应用管理 → 题了个题 → 自启动，开启。注意：小米 HyperOS 建议不授予悬浮窗权限，否则可能被系统强杀"
+            brand.contains("changhong") -> "长虹电视：设置 → 应用管理 → 题了个题 → 允许后台运行"
+            else -> null
+        }
+        if (brandTip != null) list.addView(TvUi.text(this, brandTip, if (tv) 12f else 11f, p.text3),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4); leftMargin = dp(4) })
 
         // 电视和横屏平板（宽度 ≥ 840dp）用左右两栏，手机用单列
         val wide = tv || resources.configuration.screenWidthDp >= 840

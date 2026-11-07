@@ -36,6 +36,7 @@
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden|navigation"
+            android:excludeFromRecents="true"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="unspecified">
@@ -122,6 +123,14 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+                <!-- 屏幕点亮 / 用户解锁 / 网络变化时检查服务是否存活，用于进程被杀后的快速拉起 -->
+                <action android:name="android.intent.action.SCREEN_ON" />
+                <action android:name="android.intent.action.USER_PRESENT" />
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
+                <!-- TCL / 海信等厂商开机广播 -->
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="com.tcl.android.intent.action.BOOT_COMPLETED" />
+                <action android:name="com.hisense.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
     </application>

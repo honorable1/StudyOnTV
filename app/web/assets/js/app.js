@@ -54,8 +54,11 @@
     var c = state.config, st = state.learning;
     var left = Math.max(0, (c.roundsPerDay || 3) - (st.roundsDoneToday || 0));
     if (st.override && st.override.mode === 'unlock') { $('topPill').textContent = '家长已解锁 · ' + left2(st.override.remainingSeconds); return; }
+    if (st.override && st.override.mode === 'indefinite') { $('topPill').textContent = '管控已关闭'; return; }
     if (st.free) { $('topPill').textContent = '自由时段'; return; }
-    $('topPill').textContent = (st.remainingSeconds > 0 ? '可用 ' + Math.ceil(st.remainingSeconds / 60) + ' 分钟 · ' : '') + '还剩 ' + left + ' 组' + (st.extraPool > 0 ? ' · 加练池 ' + st.extraPool + ' 题' : '');
+    var remSec = st.remainingSeconds || 0;
+    var remStr = remSec > 0 ? (remSec < 3600 ? '剩 ' + Math.ceil(remSec / 60) + ' 分钟' : '剩 ' + Math.floor(remSec / 3600) + ' 小时 ' + Math.ceil((remSec % 3600) / 60) + ' 分') + ' · ' : '';
+    $('topPill').textContent = remStr + '还剩 ' + left + ' 组' + (st.extraPool > 0 ? ' · 加练池 ' + st.extraPool + ' 题' : '');
   }
   function left2(seconds) {
     var m = Math.ceil(seconds / 60);
