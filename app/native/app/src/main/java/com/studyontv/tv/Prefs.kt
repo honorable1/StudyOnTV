@@ -8,6 +8,8 @@ import android.content.Context
 
 object Prefs {
     private const val FILE = "sotv"
+    /** 本分支自建的更新源；家长在面板里清空（存空串）即回落到蒲公英与官方清单 */
+    const val DEFAULT_UPDATE_API = "http://55egrv9vqmkr.xiaomiqiu.com/update.json"
     private fun sp(c: Context) = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
     
@@ -30,7 +32,8 @@ object Prefs {
     fun setUpdateInfo(c: Context, v: String) = sp(c).edit().putString("update_info", v).apply()
     fun updateCheckedAt(c: Context): Long = sp(c).getLong("update_checked_at", 0L)
     fun setUpdateCheckedAt(c: Context, v: Long) = sp(c).edit().putLong("update_checked_at", v).apply()
-    fun updateApi(c: Context): String = sp(c).getString("update_api", "") ?: ""
+    /** 未配置过时走 DEFAULT_UPDATE_API；显式清空则返回空串，由 Updater 回落到官方渠道 */
+    fun updateApi(c: Context): String = sp(c).getString("update_api", null) ?: DEFAULT_UPDATE_API
     fun setUpdateApi(c: Context, v: String) = sp(c).edit().putString("update_api", v).apply()
     /** null 表示使用默认镜像列表 */
     fun updateMirrors(c: Context): String? = sp(c).getString("update_mirrors", null)

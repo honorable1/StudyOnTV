@@ -41,34 +41,22 @@ object Updater {
     fun api(ctx: Context): String = Prefs.updateApi(ctx)
 
     /**
-     * 更新源地址白名单：https 一律允许；http 只允许本机/局域网。
+     * 更新源地址白名单：https 与 http 都允许，只校验协议和主机名。
      *
-     * 面板自己就跑在 `http://192.168.x.x:8099`，家长自建的清单通常也放在局域网里，
-     * 硬要求 https 等于把这条路堵死（而给内网机器配证书并不现实）。
-     * http 的风险是同网段中间人可以替换响应，但下载完成后还有
-     * `ApkInstaller.validUpdate` 的「包名一致 + versionCode 更高 + 签名交集非空」三重校验，
-     * 被替换的包装不上。所以这里只限制地址范围，不强制加密。
+     * 早先 http 只放行局域网 IP，是为了缩小攻击面；但家长通常用内网穿透域名
+     * （如 `http://xxxx.xiaomiqiu.com`）在户外托管自己的清单，那既不是私有网段
+     * 也没有证书，按 IP 白名单判断会把这条路直接堵死。
+     * http 的风险是同网段中间人可以替换响应，不过下载完成后还有
+     * `ApkInstaller.validUpdate` 的「包名一致 + versionCode 更高 + 签名交集非空」
+     * 三重校验，被换掉的包装不上；清单里带 sha256 时还会再核一次摘要。
+     * 所以这里只限制协议，不再限制主机落在哪个网段。
      */
     fun isAllowedSource(raw: String): Boolean {
         val url = try { URL(raw.trim()) } catch (_: Exception) { return false }
         return when (url.protocol?.lowercase()) {
-            "https" -> true
-            "http" -> isPrivateHost(url.host.orEmpty().lowercase())
+            "https", "http" -> !url.host.isNullOrEmpty()
             else -> false
         }
-    }
-
-    /** IPv4 私有网段 + 本机回环 + mDNS 名字；其它（含公网域名）一律不放行 */
-    private fun isPrivateHost(host: String): Boolean {
-        if (host == "localhost" || host == "::1" || host.endsWith(".local") ||
-            host.endsWith(".lan") || host.endsWith(".home.arpa")) return true
-        val parts = host.split(".")
-        if (parts.size != 4) return false
-        val n = parts.map { it.toIntOrNull() ?: return false }
-        if (n.any { it !in 0..255 }) return false
-        return n[0] == 127 || n[0] == 10 ||
-            (n[0] == 192 && n[1] == 168) ||
-            (n[0] == 172 && n[1] in 16..31)
     }
 
     fun mirrors(ctx: Context): List<String> {
@@ -282,7 +270,7 @@ object Updater {
         if (input.has("api")) {
             val api = input.optString("api").trim()
             require(api.isEmpty() || isAllowedSource(api)) {
-                "更新地址需为 https://，或局域网地址（如 http://192.168.1.10:8787/update.json）"
+                "更新地址需要是有效的 http:// 或 https:// 链接"
             }
             Prefs.setUpdateApi(ctx, api)
         }

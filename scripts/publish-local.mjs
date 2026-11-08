@@ -24,6 +24,7 @@
  *   --notes "..."             更新说明，显示在设备提示里；含 [force] 等同 --force
  *   --force                   强制更新（全屏，返回键无效）
  *   --port N                  静态服务端口，默认 8787
+ *   --base URL                清单里写的对外基地址（如 http://xxx.xiaomiqiu.com），默认 http://局域网IP:端口
  *   --dir PATH                APK 与清单的输出目录，默认 dist/
  *   --no-build                跳过 gradle，直接取 build/outputs 里现有 APK
  *   --no-serve                不起静态服务（配合 --push 只做配置）
@@ -168,7 +169,8 @@ function lanIp() {
   return pick?.address ?? '127.0.0.1';
 }
 const ip = opts.host ?? lanIp();
-const base = `http://${ip}:${port}`;
+// 对外地址：优先 --base（穿透域名等），否则用「局域网 IP + 端口」
+const base = String(opts.base ?? `http://${ip}:${port}`).replace(/\/+$/, '');
 
 // ---- 4. 生成 update.json ----
 const notes = String(opts.notes ?? '');

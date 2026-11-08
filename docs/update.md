@@ -93,7 +93,7 @@ node scripts/publish-local.mjs --flavor mobile --notes "修复了 XX"
 1. 用 `-PsotvVersionName` / `-PsotvVersionCode` 覆盖版本号后构建
    （默认 `<当前版本>-dev.1`、`versionCode + 1`）
 2. 把 APK 复制到 `dist/apk/`，用 aapt2 读回 APK 里的真实版本，不一致时以 APK 为准并告警
-3. 生成 `dist/update.json`，下载地址指向本机局域网 IP
+3. 生成 `dist/update.json`，下载地址按 `--base` 拼接（默认 `http://局域网IP:端口`）
 4. 在本机 `8787` 端口起静态服务，打印要填进设备的清单地址
 
 参数：
@@ -106,6 +106,7 @@ node scripts/publish-local.mjs --flavor mobile --notes "修复了 XX"
 | `--notes "..."` | 更新说明；含 `[force]` 等同 `--force` |
 | `--force` | 全屏强制更新，返回键无效 |
 | `--port N` | 静态服务端口，默认 8787 |
+| `--base URL` | 清单里写的对外基地址，如 `http://xxx.xiaomiqiu.com`；默认 `http://局域网IP:端口` |
 | `--no-build` | 跳过构建，复用 `build/outputs` 里现有 APK |
 | `--push URL --token sotv_xxx` | 构建完直接把清单地址写进设备 |
 
@@ -141,11 +142,35 @@ node scripts/publish-local.mjs --push http://192.168.31.174:8099 \
 
 ### 为什么允许 http
 
-`Updater.isAllowedSource` 的规则是：**https 任意，http 只允许本机/局域网**
-（`127.x`、`10.x`、`192.168.x`、`172.16–31.x`、`localhost`、`*.local`）。
-面板自己就跑在 `http://192.168.x.x:8099`，给内网机器配证书不现实；而 http 明文
-被同网段替换的风险，由下载后的「包名 + versionCode + 签名」三重校验兜住
-—— 换掉的包装不上。公网 http 地址仍然会被拒绝。
+`Updater.isAllowedSource` 的规则是：**https 与 http 都允许，只校验协议和主机名**
+（早先 http 只放行 `127.x`、`10.x`、`192.168.x`、`172.16–31.x`、`localhost`、`*.local`）。
+
+放开的原因是家长常用内网穿透域名托管清单（如 `http://xxxx.xiaomiqiu.com`）——
+它既不是私有网段也没有证书，按 IP 白名单判断会把这条路直接堵死。
+面板自己跑在 `http://192.168.x.x:8099`，给内网机器配证书同样不现实。
+http 明文被中间人替换的风险，由下载后的「包名 + versionCode + 签名交集」三重校验兜住，
+清单里带 `sha256` 时还会再核一次摘要 —— 换掉的包装不上。
+
+### 用穿透域名托管（xiaomiqiu 等）
+
+设备不在同一个 WiFi 时，局域网地址就失效了。做法是把本机的 `dist/` 通过穿透服务
+暴露出去，让清单里写公网域名：
+
+```bash
+# 1. 构建 + 生成清单（地址写成穿透域名），同时在本机 8788 起静态服务
+node scripts/publish-local.mjs --flavor both --port 8788 \
+  --base http://55egrv9vqmkr.xiaomiqiu.com --notes "本分支验证包"
+
+# 2. 穿透客户端把 55egrv9vqmkr.xiaomiqiu.com 指向本机 8788，验证：
+curl -s http://55egrv9vqmkr.xiaomiqiu.com/update.json
+```
+
+清单里的下载地址会变成 `http://55egrv9vqmkr.xiaomiqiu.com/apk/StudyOnTV-Mobile-vX.apk`，
+所以穿透必须映射到 **`dist/` 目录本身**（不是父目录），否则 `/apk/...` 会 404。
+
+打包时若想让设备**开箱即用**这个源，改 `Prefs.DEFAULT_UPDATE_API` 的默认值即可
+（当前为 `http://55egrv9vqmkr.xiaomiqiu.com/update.json`）。家长在面板里清空更新地址
+仍会回落到「蒲公英 → 官方 update.json → GitHub Release」链路。
 
 ### 两个容易踩的坑
 
