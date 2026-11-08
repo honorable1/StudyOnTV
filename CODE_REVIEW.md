@@ -513,3 +513,51 @@ P0 / P1 / P2 全部 21 项、P3 12/13 项已在 `feature/dev` 上落地，逐项
 **未处理 1 项**：`admin/assets/index-*.js` 无可读源码。上游 v0.3.19 放出了 `parent-ui/src/` 下 3 个 tsx，但缺 `./api`、`./schema`、`./WeekSchedule`、8 个 shadcn 组件与全部构建脚手架，不足以构成可构建工程，故登录逻辑仍以 `admin/assets/auth-secure.js` 垫片形式存在。等上游补齐 `api.ts` 后可把 SHA-256/HMAC 搬进源码并删除垫片。
 
 **验证**：`tv` / `mobile` 两个 flavor 均 `BUILD SUCCESSFUL`，仅剩既存的 `Notification.Builder` 等弃用警告；无 JVM 单测与真机动态验证（本机无测试基础设施）。
+
+---
+
+## 待办（TODO）
+
+### 1. 崩溃上报：等自己的 Bugly 账号下来后重新接入
+
+**现状（`f86e720`）**：已整体移除。原实现上报腾讯 Bugly，但 AppID `9396669eea` 是上游作者的，
+数据进不了自己的后台；且 tv（`com.studyontv.tv`）、mobile（`com.studyontv.mobile`）、
+两个 `*.debug` 共四个包名共用一个 AppID，崩溃混在一起分不清设备。
+
+现在崩溃只写本机 `logs/sotv.log`（单文件 1 MB，保留 4 份轮转），家长面板「诊断」页
+可搜索、可导出 zip（含 `device.json` / `config.json` / 完整堆栈）。
+面板「设置 → 崩溃报告」开关保留，但点击会提示"本版本不联网上报崩溃"。
+
+**为什么要等**：得先有一个能登录的 Bugly 后台，否则上报等于把数据送到别人账号里。
+
+**接入步骤**
+
+1. QQ 登录 bugly.qq.com →「新建产品」→ Android，包名填 `com.studyontv.tv`
+2. 再建一个产品，包名 `com.studyontv.mobile` —— 两个 flavor 包名不同，必须分开，
+   否则崩溃数据混在一起
+3. 两个 AppID 按 flavor 选：
+   ```kotlin
+   private val APP_ID = if (BuildConfig.FLAVOR == "tv") "tv 的 AppID" else "mobile 的 AppID"
+   ```
+4. debug 包带 `.debug` 后缀，用 `if (BuildConfig.DEBUG) return` 直接不上报，
+   免得测试崩溃污染线上统计
+5. 恢复的代码：`app/build.gradle.kts` 的 aar 依赖、`BuglyInit.kt`、`DeviceRuntime.ensure()`
+   里的初始化；若仍要"崩溃后先征得同意再上传"，同时恢复 `CrashDetector.kt`
+   与 `MainActivity` 的同意弹窗
+6. 文案与合规：弹窗必须写明采集 **Android ID（设备标识）**，不能只写"型号 + 系统版本"；
+   `docs/install.md` 的「崩溃了怎么查」也要改成"本机日志 + 可选上报"
+
+**取舍**：release 没开混淆（`isMinifyEnabled = false`），堆栈里类名行号本来就可读，
+不需要 Bugly 的符号还原。如果只是想让家里几台设备崩了能查，本机日志 + 面板导出已经够用；
+接入的真正收益是"设备不在身边时能远程看到崩溃"。
+
+### 2. admin 面板源码迁移
+
+等上游补齐 `parent-ui/src/api.ts`、`schema`、`WeekSchedule` 与 shadcn 组件后，
+把 `admin/assets/auth-secure.js` 里的 SHA-256 / HMAC 挑战-响应搬进源码，删掉 fetch 劫持垫片。
+
+### 3. 真机验证清单
+
+答题额度与时段判定顺序、家长面板「无限时关闭」、题库暂停题是否隐藏、
+输入法豁免、无障碍被杀后的通知、更新源切换后的下载安装。暂无设备，待补。
+
