@@ -172,6 +172,36 @@ curl -s http://55egrv9vqmkr.xiaomiqiu.com/update.json
 （当前为 `http://55egrv9vqmkr.xiaomiqiu.com/update.json`）。家长在面板里清空更新地址
 仍会回落到「蒲公英 → 官方 update.json → GitHub Release」链路。
 
+### 一键启停脚本（Windows）
+
+`scripts/serve-update.cmd` 把「启动 / 停止 / 重启 / 开机自启」包成了双击菜单，
+也可以在命令行带参数调用：
+
+| 操作 | 双击菜单 | 命令行 |
+|---|---|---|
+| 启动 | 1 | `serve-update.cmd start` |
+| 停止 | 2 | `serve-update.cmd stop` |
+| 重启 | 3 | `serve-update.cmd restart` |
+| 安装开机自启 | 4 | `serve-update.cmd install` |
+| 移除开机自启 | 5 | `serve-update.cmd uninstall` |
+| 查看状态 | 双击即显示 | `serve-update.cmd status` |
+
+实现上有几个刻意为之的点：
+
+- **文件是 GBK + `chcp 936`**：改成 UTF-8 保存会显示乱码。`.gitattributes` 里固定了
+  `*.cmd` 用 CRLF，否则 `goto` 标签会失效、菜单直接跳错分支。
+- **不依赖 PATH**：`node` 依次尝试 `where node`、`C:\Program Files\nodejs`、
+  `%USERPROFILE%\.workbuddy\binaries\node\versions\*\node.exe`；
+  PowerShell 一律用 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`
+  绝对路径调用，避免继承了 Git Bash 的 PATH 时找不到。
+- **服务跑在独立的最小化窗口**：关掉那个窗口等于停止服务，关掉控制台菜单不受影响。
+- **计划任务用 `Register-ScheduledTask`**（登录时触发），动作是
+  `cmd.exe /c "<仓库>\scripts\serve-update.cmd" auto`，可在 `taskschd.msc` 里查看。
+  用这个而不是 `schtasks`，是因为前者对中文任务名和带空格路径的引号处理更稳。
+- `status` 里的 `local` / `public` 分别是本机 `127.0.0.1:8788` 和穿透域名的可达性，
+  穿透没开时 `public` 会是 503，`local` 仍是 200 —— 一眼能看出是哪一层断了。
+
+
 ### 两个容易踩的坑
 
 - **只改 versionName 不改 versionCode**：设备会提示"有新版本"，点下去却报
