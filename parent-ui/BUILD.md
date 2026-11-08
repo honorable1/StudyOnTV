@@ -35,6 +35,23 @@ npm run build
 
 构建将静态页面导出到 `admin/`。随后构建 APK，Gradle 会同步 `admin/`、`app/web/`、`shared/` 与内置题库到 assets。所有必要的页面组件、公式脚本、字体均随包提供。
 
+> `admin/` 是 `vite build` 的产物，`emptyOutDir` 会先清空再写入。手工留在 `admin/assets/` 下的文件（除 `analytics.js`——它由 `prepare-assets.mjs` 经 `public/` 转存）在下次构建时都会消失，需要长期存在的资源请放进 `parent-ui/public/`。
+
+### 登录：挑战-响应
+
+面板不再提交明文密码。`api.ts` 的 `login()` 先 `GET /api/auth/challenge` 取 `{challenge, salt}`，再算
+
+```
+key   = sha256Hex(密码 + ":" + salt)
+proof = HMAC-SHA256(key, challenge)
+```
+
+提交 `{challenge, proof}`，服务端校验后立即作废该挑战，抓包无法重放。
+
+SHA-256 / HMAC 在 `src/lib/auth-crypto.ts` 里自带实现，**不要换成 `crypto.subtle`**：面板跑在 `http://设备IP:8099`，非安全上下文里 `crypto.subtle` 是 undefined。算法必须与 `AdminAuth.kt` 逐字节一致，改动后跑 `npm run test`，`src/lib/auth-crypto.test.ts` 会与 Node 的 `crypto` 模块逐项对拍。
+
+设备不支持该接口（旧固件、密码尚未升级为 `auth_key`、正在锁定）时会自动回落到明文 `passphrase`，不会把家长卡在登录页。
+
 「全天可用」是独立布尔开关。关闭时必须选择有效且不同的开始、结束时间，支持跨午夜；开启时由开关决定全天可用，不再使用空字符串推断。前后端都校验规则。
 
 ## 更新附件

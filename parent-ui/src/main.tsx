@@ -12,7 +12,7 @@ import {Badge} from '@/components/ui/badge';
 import {Separator} from '@/components/ui/separator';
 import {Sidebar,SidebarContent,SidebarFooter,SidebarGroup,SidebarGroupLabel,SidebarHeader,SidebarInset,SidebarMenu,SidebarMenuBadge,SidebarMenuButton,SidebarMenuItem,SidebarProvider,SidebarRail,SidebarTrigger} from '@/components/ui/sidebar';
 import {DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuLabel,DropdownMenuSeparator,DropdownMenuTrigger,DropdownMenuRadioGroup,DropdownMenuRadioItem} from '@/components/ui/dropdown-menu';
-import {api,getHost,setHost,setToken,enablePreview} from './api';
+import {api,getHost,setHost,setToken,enablePreview,login} from './api';
 import RulesPage from './RulesPage';
 import RemotePage from './RemotePage';
 import QuestionBank from './QuestionBank';
@@ -59,7 +59,7 @@ function App(){const[session,setSession]=useState(()=>restoreSession()?1:0),[nex
 function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useTheme>}){
  const[host,updateHost]=useState(getHost()),[secret,setSecret]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const[visible,setVisible]=useState(false),[accepted,setAccepted]=useState(true),[crashReports,setCrashReports]=useState(true),[document,setDocument]=useState<'terms'|'privacy'|null>(null);
- async function submit(e:any){e.preventDefault();if(busy)return;setError('');if(!accepted)return setError('请先同意用户协议和隐私政策');if(secret.length<6)return setError('请输入管理密码');setBusy(true);try{setHost(host);const result=await api('/api/auth','POST',{passphrase:secret,remember:true});setToken(result.token);saveSession(getHost(),result.token);setSecret('');onLogin();}catch(e:any){setError(e.message==='Failed to fetch'?'无法连接设备，请检查设备地址和 WiFi':e.message);}finally{setBusy(false);}}
+ async function submit(e:any){e.preventDefault();if(busy)return;setError('');if(!accepted)return setError('请先同意用户协议和隐私政策');if(secret.length<6)return setError('请输入管理密码');setBusy(true);try{setHost(host);const result=await login(secret,true);setToken(result.token);saveSession(getHost(),result.token);setSecret('');onLogin();}catch(e:any){setError(e.message==='Failed to fetch'?'无法连接设备，请检查设备地址和 WiFi':e.message);}finally{setBusy(false);}}
  return <main className="login-page">
   <header className="login-topbar"><div className="login-brand"><span className="brand-icon"><Leaf/></span><span>题了个题</span></div><ThemeSwitch {...theme}/></header>
   <div className="login-center"><section className="login-card" aria-labelledby="login-title">

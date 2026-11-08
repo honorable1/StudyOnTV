@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node prepare-assets.mjs && tsc --noEmit && vite build",
     "dev": "vite --host 127.0.0.1",
-    "test": "node --experimental-strip-types src/schema.test.ts"
+    "test": "node --experimental-strip-types src/schema.test.ts && node --experimental-strip-types src/lib/auth-crypto.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "3.10.0",

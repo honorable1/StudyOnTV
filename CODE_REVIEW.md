@@ -551,25 +551,28 @@ P0 / P1 / P2 全部 21 项、P3 12/13 项已在 `feature/dev` 上落地，逐项
 不需要 Bugly 的符号还原。如果只是想让家里几台设备崩了能查，本机日志 + 面板导出已经够用；
 接入的真正收益是"设备不在身边时能远程看到崩溃"。
 
-### 2. admin 面板源码迁移
+### 2. admin 面板源码迁移 —— 已完成
 
-**已解锁**：上游在 v0.3.21（`7b49e4c`）放出了 `parent-ui/` 完整源码 —— vite + React + shadcn，
-`src/api.ts`、`schema.ts`、`WeekSchedule.tsx`、`components/ui/*` 与 `package-lock.json` 都在，
-`BUILD.md` 写了构建方式，`.gitignore` 也从「忽略整个 parent-ui」改成只忽略 `dist/` 与 vendor。
+上游 v0.3.21（`7b49e4c`）放出了 `parent-ui/` 完整源码后，`auth-secure.js` 这个
+「劫持 `window.fetch`、不改打包产物」的垫片已经可以退役，挑战-响应直接写进了源码：
 
-下一步是把 `admin/assets/auth-secure.js` 的挑战-响应搬进源码：
+- 新增 `parent-ui/src/lib/auth-crypto.ts`：纯 JS 的 SHA-256 与 HMAC-SHA256，
+  **零依赖**（没有引 `@noble/hashes`，省一个包，也避免多一处供应链）。
+  原因是面板跑在 `http://设备IP:8099`，非安全上下文里 `crypto.subtle` 是 undefined。
+  附带 `src/lib/auth-crypto.test.ts`，与 Node 的 `crypto` 逐项对拍：padding 边界
+  （55/56/63/64/65 字节）、中文与 emoji 的 UTF-8、HMAC 超 64 字节密钥分支
+- `api.ts` 新增 `login()`：先 `GET /api/auth/challenge` 取 `{challenge, salt}`，
+  算 `key = sha256Hex(密码 + ':' + salt)`、`proof = HMAC-SHA256(key, challenge)`，
+  再以 `{challenge, proof}` 提交；密码不再上网
+- 取不到挑战（旧固件、密码未升级成 `auth_key`、正在锁定、网络异常）时回落到明文
+  `passphrase`，服务端仍兼容并在登录成功后补写 `auth_key`，不会把家长卡在登录页
+- `main.tsx` 的登录提交改用 `login()`；`admin/` 重新由 `npm run build` 产出，
+  `auth-secure.js` 及其 `<script>` 引用一并消失
 
-1. 在 `parent-ui/src/api.ts` 的 `api()` 里，遇到 `path === '/api/auth'` 且 body 含 `passphrase` 时，
-   先 `GET /api/auth/challenge` 拿 `{challenge, salt}`，算出
-   `key = sha256Hex(passphrase + ':' + salt)`、`proof = HMAC-SHA256(key, challenge)`，
-   再用 `{challenge, proof}` 替换 body 发出
-2. SHA-256 / HMAC 用现成依赖（如 `@noble/hashes`）实现，**别用 `crypto.subtle`**：
-   面板跑在 `http://设备IP:8099`，非安全上下文里 `crypto.subtle` 是 undefined
-3. `npm run build` 产出到 `admin/`，删掉 `admin/index.html` 里的 `auth-secure.js` 引用与文件本身
-4. 回归验证：面板登录、改密码、会话过期跳转三处
-
-之所以还没做：需要 `npm install`（约 400 个包）并改上游 React 代码，风险和验证成本都高于
-这次合并本身，单独排一次更稳。
+验证：`npm run build`（`prepare-assets` → `tsc --noEmit` → `vite build`）通过；
+产物 `admin/assets/index-D8Q5UAt9.js` 里能读到 `api/auth/challenge` 与 `{challenge, proof}`
+两个分支。**未做真机登录验证**（无设备），首次上手请留意面板能否正常登入 ——
+若失败会走回落分支，仍可登录，只是没有加固效果。
 
 
 ### 3. 真机验证清单
