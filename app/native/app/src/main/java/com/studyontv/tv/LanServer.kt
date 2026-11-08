@@ -331,9 +331,21 @@ class LanServer(
         return false
     }
 
-    /** 题库：列表 / 新增 / 批量暂停 / 删除 */
+    /** 题库：AI 生成 / 列表 / 新增 / 批量暂停 / 删除 */
     private fun questionRoutes(r: Req): Boolean {
         when {
+            // P3 拆 route() 时这条被漏掉了：面板点「智能生成」只会拿到空响应。
+            // 与 base 版逐条比对后确认这是唯一丢失的路由，补回。
+            r.path == "/api/questions/generate" && r.method == "POST" -> {
+                val payload = try { JSONObject(r.body.ifEmpty { "{}" }) } catch (_: Exception) { null }
+                if (payload == null) { json(r.out, 200, err("bad_json")); return true }
+                json(r.out, 200, try {
+                    GradingService.generateQuestions(store, payload)
+                } catch (e: Exception) {
+                    err("generate_failed").put("message", e.message ?: "生成失败，请稍后重试")
+                })
+                return true
+            }
             r.path == "/api/questions" && r.method == "GET" -> {
                 // all=1 与 enabledOnly=false 等价：都表示「包含已暂停的题目」。
                 // 管理端用 enabledOnly=false 拿全量再在本地按「仅显示启用」过滤，

@@ -553,8 +553,24 @@ P0 / P1 / P2 全部 21 项、P3 12/13 项已在 `feature/dev` 上落地，逐项
 
 ### 2. admin 面板源码迁移
 
-等上游补齐 `parent-ui/src/api.ts`、`schema`、`WeekSchedule` 与 shadcn 组件后，
-把 `admin/assets/auth-secure.js` 里的 SHA-256 / HMAC 挑战-响应搬进源码，删掉 fetch 劫持垫片。
+**已解锁**：上游在 v0.3.21（`7b49e4c`）放出了 `parent-ui/` 完整源码 —— vite + React + shadcn，
+`src/api.ts`、`schema.ts`、`WeekSchedule.tsx`、`components/ui/*` 与 `package-lock.json` 都在，
+`BUILD.md` 写了构建方式，`.gitignore` 也从「忽略整个 parent-ui」改成只忽略 `dist/` 与 vendor。
+
+下一步是把 `admin/assets/auth-secure.js` 的挑战-响应搬进源码：
+
+1. 在 `parent-ui/src/api.ts` 的 `api()` 里，遇到 `path === '/api/auth'` 且 body 含 `passphrase` 时，
+   先 `GET /api/auth/challenge` 拿 `{challenge, salt}`，算出
+   `key = sha256Hex(passphrase + ':' + salt)`、`proof = HMAC-SHA256(key, challenge)`，
+   再用 `{challenge, proof}` 替换 body 发出
+2. SHA-256 / HMAC 用现成依赖（如 `@noble/hashes`）实现，**别用 `crypto.subtle`**：
+   面板跑在 `http://设备IP:8099`，非安全上下文里 `crypto.subtle` 是 undefined
+3. `npm run build` 产出到 `admin/`，删掉 `admin/index.html` 里的 `auth-secure.js` 引用与文件本身
+4. 回归验证：面板登录、改密码、会话过期跳转三处
+
+之所以还没做：需要 `npm install`（约 400 个包）并改上游 React 代码，风险和验证成本都高于
+这次合并本身，单独排一次更稳。
+
 
 ### 3. 真机验证清单
 
