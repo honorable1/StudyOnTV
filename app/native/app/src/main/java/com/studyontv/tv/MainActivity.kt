@@ -58,7 +58,11 @@ open class MainActivity : Activity() {
     override fun onStop() {
         super.onStop()
         MediaPause.release(this)
-        if (DeviceBridge.isTv(this) && ::web.isInitialized && !webReleased) {
+        // 正在等原生输入页（填空题）回传答案时不能销毁 WebView：
+        // TvTextInputActivity 会把结果写回当前 WebView，destroy() 后 JS 上下文消失，
+        // AnswerInput 的重投全部落在死实例上，表现为「点确定回到题目还是空的」（#64 / #84）。
+        val awaitingInput = AnswerInput.active
+        if (DeviceBridge.isTv(this) && ::web.isInitialized && !webReleased && !awaitingInput) {
             (web.parent as? android.view.ViewGroup)?.removeView(web)
             web.destroy()
             webReleased = true

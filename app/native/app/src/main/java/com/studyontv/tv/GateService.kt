@@ -34,6 +34,7 @@ class GateService : Service() {
     }
     private var anchor: View? = null
     private lateinit var overlay: GateOverlay
+    private val countdown by lazy { CountdownOverlay(this) }
     private val tick = object : Runnable {
         override fun run() {
             try { checkForeground() } catch (e: Exception) { android.util.Log.e("StudyOnTV", "Screen time check failed", e) }
@@ -55,6 +56,7 @@ class GateService : Service() {
         if (InputSupport.active) {
             wasUsing = false
             overlay.suspend(); WatchAccessibilityService.suspendGate()
+            countdown.hide()
             return
         }
         if (now < settingsUntil) { wasUsing = false; hideAll(); return }
@@ -63,8 +65,16 @@ class GateService : Service() {
         val awake = power.isInteractive && !locked
         val monitoring = canOverlay || WatchAccessibilityService.connected || Foreground.hasUsageAccess(this)
         val pkg = Foreground.current(this)
+        // 记住孩子正在用的应用，解锁后用它「回到原画面」（issue #68 / #74）
+        if (pkg != null && pkg != packageName && !exempt(pkg, false)) rememberActive(pkg)
         // With only overlay permission, use awake time outside our own activities.
-        val active = awake && monitoring && if (pkg == null) canOverlay else !exempt(pkg)
+        // 桌面包名 == 首页包名的机型（海信 VIDAA 聚好看）：看片时前台仍是“桌面”包，
+        // 此时用系统播放状态兜底，否则永远不扣时间、到点也不弹题（issue #66）。
+        val active = awake && monitoring && when {
+            pkg == null -> canOverlay
+            !exempt(pkg) -> true
+            else -> launcherPlaying(pkg)
+        }
         val protecting = awake && monitoring && if (pkg == null) canOverlay else !exempt(pkg, false)
         val reason = status.getString("reason")
         // 这个方法每秒跑一次，config() 与 get() 都各自只取一次，避免同一 tick 内重复查库
@@ -115,6 +125,15 @@ class GateService : Service() {
                 }
             }
         }
+        updateCountdown(status, active, free, canOverlay)
+    }
+
+    /** 看电视期间在画面右上角显示剩余分钟数；不在看电视 / 拦截中 / 自由时段 / 家长解锁时隐藏 */
+    private fun updateCountdown(status: org.json.JSONObject, active: Boolean, free: Boolean, canOverlay: Boolean) {
+        val seconds = status.optLong("remainingSeconds") + status.optLong("freeQuotaSeconds")
+        val show = canOverlay && active && !free && status.optString("reason").isEmpty() &&
+            status.optJSONObject("override") == null && seconds > 0 && !hasGate()
+        if (show) countdown.update(seconds) else countdown.hide()
     }
 
     private fun updateAnchor(allowed: Boolean) {
@@ -134,7 +153,7 @@ class GateService : Service() {
         }
     }
 
-    private fun hideAll() { overlay.hide(); WatchAccessibilityService.hideGate() }
+    private fun hideAll() { overlay.hide(); WatchAccessibilityService.hideGate(); countdown.hide() }
 
     private val mediaTick = object : Runnable {
         override fun run() {
@@ -209,6 +228,35 @@ class GateService : Service() {
         } catch (e: Exception) { android.util.Log.w("StudyOnTV", "Cannot post fallback notification", e) }
     }
 
+    /**
+     * 系统解析出来的 HOME 包。
+     *
+     * 不能长期缓存：用户可能先装应用再换默认桌面，部分固件也会在升级后改 HOME 包名，
+     * 一旦缓存了旧值，「桌面包在播放」的判定就永远不会命中（issue #66）。
+     * 这里只做 10 秒短缓存，和 exempt() 里每秒 resolveActivity 的开销相当。
+     */
+    private var launcherPkgCache: String? = null
+    private var launcherPkgAt = 0L
+    private fun launcherPackage(): String? {
+        val now = SystemClock.elapsedRealtime()
+        if (now - launcherPkgAt < 10_000) return launcherPkgCache
+        launcherPkgCache = try {
+            packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0)?.activityInfo?.packageName
+        } catch (_: Exception) { null }
+        launcherPkgAt = now
+        return launcherPkgCache
+    }
+
+    /**
+     * 只有「厂商把播放器塞进了 HOME 包」这一个特殊情况才把桌面算成在用，
+     * 已知的系统桌面（Foreground.isLauncher）永远不算，避免在桌面挂着就被计时。
+     */
+    private fun launcherPlaying(pkg: String): Boolean {
+        if (pkg != launcherPackage()) return false
+        if (Foreground.isLauncher(pkg)) return false
+        return Playback.hasActive(this)
+    }
+
     private fun isSettings(pkg: String): Boolean = pkg == systemSettingsPackage ||
         pkg in setOf("com.android.settings", "com.android.tv.settings", "com.google.android.tv.settings")
 
@@ -277,6 +325,7 @@ class GateService : Service() {
         Diag.info("Service", "GateService started via=$startVia")
         Watchdog.serviceStarted(this, startVia)
         Watchdog.schedule(this)
+        Watchdog.scheduleAlarm(this)
         handler.post(tick)
         handler.postDelayed(mediaTick, 1000)
     }
@@ -297,7 +346,7 @@ class GateService : Service() {
         if (Prefs.onboarded(this)) scheduleRestart(this, 5000)
         handler.removeCallbacks(tick); handler.removeCallbacks(mediaTick)
         MediaPause.release(this)
-        overlay.destroy(); WatchAccessibilityService.hideGate(); updateAnchor(false)
+        overlay.destroy(); WatchAccessibilityService.hideGate(); countdown.destroy(); updateAnchor(false)
         instance = null
         Prefs.setServiceRunning(this, false)
         Diag.info("Service", "GateService destroyed")
@@ -307,6 +356,14 @@ class GateService : Service() {
     companion object {
         private var instance: GateService? = null
         private var startVia = "app"
+
+        /**
+         * 孩子最近真正在用的受控应用。答题解锁后用它把画面还原，
+         * 而不是让系统跳回桌面（issue #68 小米电视4 / #74 Sony BRAVIA）。
+         */
+        @Volatile private var lastActivePackage: String? = null
+        fun rememberActive(pkg: String) { lastActivePackage = pkg }
+        fun rememberedActive(): String? = lastActivePackage
         val running: Boolean get() = instance != null
 
         fun start(context: Context) {

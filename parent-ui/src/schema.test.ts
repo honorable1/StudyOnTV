@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {defaults,ruleSchema,segments} from './schema.ts';
+assert.equal(ruleSchema.safeParse({...defaults,allDay:false,windowStart:'',windowEnd:''}).success,false);
+assert.equal(ruleSchema.safeParse({...defaults,allDay:false,windowStart:'18:30',windowEnd:'18:30'}).success,false);
+assert.equal(ruleSchema.safeParse({...defaults,allDay:true,windowStart:'18:30',windowEnd:'18:30'}).success,true);
+assert.equal(ruleSchema.safeParse({...defaults,allDay:false,windowStart:'25:00'}).success,false);
+assert.equal(ruleSchema.safeParse({...defaults,allDay:false,windowStart:'22:00',windowEnd:'06:00'}).success,true);
+assert.equal(ruleSchema.safeParse({...defaults,allDay:true,windowStart:'',windowEnd:''}).success,true);
+assert.deepEqual(segments(false,'',''),[]);
+assert.deepEqual(segments(true,'18:30','20:00'),[{left:0,width:100}]);
+const overnight=segments(false,'22:00','06:00');
+assert.equal(overnight.length,2);
+assert.ok(Math.abs(overnight.reduce((sum,s)=>sum+s.width,0)-100/3)<1e-8);
+assert.equal(ruleSchema.safeParse({...defaults,questionsPerRound:NaN}).success,false);
+console.log('PASS blank times, explicit all-day, equal endpoints, invalid hours, overnight windows and cleared numbers');

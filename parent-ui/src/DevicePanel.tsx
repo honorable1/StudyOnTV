@@ -9,6 +9,7 @@ import {Badge} from '@/components/ui/badge';
 import {Switch} from '@/components/ui/switch';
 import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription,DialogFooter} from '@/components/ui/dialog';
 import {api} from './api';
+import {copyText} from './lib/clipboard';
 import {Panel,Row} from './RulesPage';
 import {Field} from './QuestionBank';
 
@@ -42,7 +43,7 @@ export default function DevicePanel({sessionId,onPasswordChanged,only}:{sessionI
  const issue=useMutation({mutationFn:()=>api('/api/integration','POST',scope),onSuccess:(r:any)=>{setIssued(r.token);client.setQueryData(['integration',sessionId],r.integration);toast.success('集成令牌已生成');},onError:(e:any)=>toast.error(e.message)});
  const patch=useMutation({mutationFn:(body:any)=>api('/api/integration','PUT',body),onSuccess:(r:any)=>{client.setQueryData(['integration',sessionId],r);toast.success('已保存');},onError:(e:any)=>toast.error(e.message)});
  const revoke=useMutation({mutationFn:()=>api('/api/integration','DELETE'),onSuccess:(r:any)=>{client.setQueryData(['integration',sessionId],r);setIssued('');toast.success('集成令牌已吊销');},onError:(e:any)=>toast.error(e.message)});
- const copy=async(value:string)=>{try{await navigator.clipboard.writeText(value);toast.success('已复制');return;}catch{}const ta=document.createElement('textarea');ta.value=value;ta.style.cssText='position:fixed;top:50%;left:50%;width:200px;height:60px;opacity:0.01;z-index:99999;';document.body.appendChild(ta);ta.focus();ta.select();let ok=false;try{ok=document.execCommand('copy');}catch{}document.body.removeChild(ta);if(ok)toast.success('已复制');else toast.error('复制失败，请手动复制');};
+ const copy=async(value:string)=>{const r=await copyText(value);if(r==='ok')toast.success('已复制');else toast.error('复制失败，请手动选中文字复制');};
  const integrationBase=`http://${device.data?.ip||'设备IP'}:${device.data?.port||8099}`;
  const displayToken=issued||'<集成令牌>';
  const stateCurl=`curl "${integrationBase}/api/state" -H "Authorization: Bearer ${displayToken}"`;

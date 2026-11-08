@@ -35,6 +35,24 @@ class Watchdog : JobService() {
             } catch (e: Exception) { android.util.Log.w("StudyOnTV", "Cannot schedule watchdog", e) }
         }
 
+        /**
+         * 第二条兜底：部分国产固件会限制 JobScheduler（省电策略里直接掐掉作业），
+         * 但放行 AlarmManager 唤醒。这里用不精确闹钟（不需要任何额外权限）每 15 分钟喊一次，
+         * 进程被杀后最迟约 20 分钟能被拉回来，比只有 JobScheduler 的机型成功率高。
+         */
+        fun scheduleAlarm(context: Context) {
+            try {
+                val manager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+                val intent = android.content.Intent(context, BootReceiver::class.java).setAction(REVIVE_ACTION)
+                val pending = android.app.PendingIntent.getBroadcast(context, 7302, intent,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+                manager.setInexactRepeating(android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    SystemClock.elapsedRealtime() + 5 * 60 * 1000L, 15 * 60 * 1000L, pending)
+            } catch (e: Exception) { android.util.Log.w("StudyOnTV", "Cannot schedule revive alarm", e) }
+        }
+
+        const val REVIVE_ACTION = "com.studyontv.tv.REVIVE"
+
         fun bootCount(context: Context): Int = try {
             android.provider.Settings.Global.getInt(context.contentResolver, "boot_count", -1)
         } catch (_: Throwable) { -1 }

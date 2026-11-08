@@ -46,6 +46,9 @@ class QuestionsDao(private val store: LocalStore) {
                     .put("tip", c.getString(c.getColumnIndexOrThrow("tip")) ?: "")
                     .put("subject", c.getString(c.getColumnIndexOrThrow("subject")) ?: "")
                     .put("level", c.getString(c.getColumnIndexOrThrow("level")) ?: "")
+                    // 必须回传 enabled：管理端靠它区分「启用 / 已暂停」，
+                    // 否则暂停的题在页面上永远看不到，用户会以为题目丢了。
+                    .put("enabled", c.getInt(c.getColumnIndexOrThrow("enabled")) != 0)
                 if (!item.has("type")) item.put("type", "single")
                 out.put(item)
             }

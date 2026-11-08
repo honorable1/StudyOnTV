@@ -22,6 +22,7 @@ import org.json.JSONObject
 class TvTextInputActivity : Activity() {
     private lateinit var edit: EditText
     private var delivered = false
+    private var cancelled = false
     private val requestId get() = intent.getStringExtra("requestId") ?: ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,6 +88,7 @@ class TvTextInputActivity : Activity() {
     private fun finishWith(save: Boolean) {
         if (delivered) return
         delivered = true
+        cancelled = !save
         AnswerInput.complete(requestId, if (save) JSONObject().put("text", edit.text.toString()) else null)
         finish()
     }
@@ -97,7 +99,11 @@ class TvTextInputActivity : Activity() {
     }
 
     override fun onDestroy() {
-        if (!delivered && !isChangingConfigurations) AnswerInput.complete(requestId, null)
+        // 遥控器「返回键」退出时不算取消：把已输入的内容带回去，避免辛苦打的字白打（#64）
+        if (!delivered && !isChangingConfigurations) {
+            val draft = if (::edit.isInitialized) edit.text.toString() else ""
+            AnswerInput.complete(requestId, if (draft.isNotBlank()) JSONObject().put("text", draft) else null)
+        }
         super.onDestroy()
     }
 }

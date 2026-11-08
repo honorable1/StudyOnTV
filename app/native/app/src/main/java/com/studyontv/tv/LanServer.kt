@@ -335,7 +335,10 @@ class LanServer(
     private fun questionRoutes(r: Req): Boolean {
         when {
             r.path == "/api/questions" && r.method == "GET" -> {
-                val all = r.q["all"] == "1"
+                // all=1 与 enabledOnly=false 等价：都表示「包含已暂停的题目」。
+                // 管理端用 enabledOnly=false 拿全量再在本地按「仅显示启用」过滤，
+                // 否则暂停的题在页面上完全看不到（用户以为题目丢了）。
+                val all = r.q["all"] == "1" || r.q["enabledOnly"] == "false"
                 val items = store.questions(r.q["subject"], r.q["level"], r.q["limit"]?.toIntOrNull() ?: 500,
                     enabledOnly = !all, sortBy = r.q["sort"] ?: "random")
                 json(r.out, 200, JSONObject().put("items", items))

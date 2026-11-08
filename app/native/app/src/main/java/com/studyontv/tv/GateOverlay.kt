@@ -117,6 +117,20 @@ class GateOverlay(
                 if (InputSupport.active) suspend()
             }
         }
+        @JavascriptInterface fun resumePrevious() {
+            handler.post {
+                val target = GateService.rememberedActive()
+                hide()
+                GateService.hideGates()
+                if (target == null || target == context.packageName || Foreground.isLauncher(target)) return@post
+                // 悬浮层收起后系统通常会把原应用带回前台；没回来就主动拉起
+                handler.postDelayed({
+                    val now = try { Foreground.current(context) } catch (_: Exception) { null }
+                    if (now == null || now == context.packageName || Foreground.isLauncher(now))
+                        DeviceBridge.launchPackage(context, target)
+                }, 700)
+            }
+        }
         @JavascriptInterface fun backToQuiz() {
             handler.post {
                 context.startActivity(Intent(context, MainActivity::class.java)

@@ -1,4 +1,5 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
+import {copyText} from './lib/clipboard';
 import {useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
 import {Plus,Upload,Download,FileJson,Search,X,Pencil,Trash2,Check,Copy,Sparkles,ChevronLeft,ChevronRight,RefreshCw,ClipboardCopy,ExternalLink} from 'lucide-react';
 import {toast} from 'sonner';
@@ -39,11 +40,12 @@ export default function QuestionBank({sessionId}:{sessionId:number}){
  const configured=!!(grading.data?.endpoint&&grading.data?.model);
  const aiProvider=(grading.data?.providers||[]).find((p:any)=>p.id===grading.data?.provider)?.name||'AI';
 
+ const pausedCount=questions.filter((q:any)=>q.enabled===false).length;
  const filtered=useMemo(()=>{const k=search.trim().toLowerCase();const list=questions.filter((q:any)=>(showAll||q.enabled!==false)&&(typeFilter==='all'||(q.type||'single')===typeFilter)&&(starFilter==='all'||String(q.difficulty||2)===starFilter)&&(subjectFilter==='all'||(q.subject||'')===subjectFilter)&&(levelFilter==='all'||(q.level||'')===levelFilter)&&(!k||(q.q+' '+answerOf(q)+' '+q.tip+' '+(q.subject||'')+' '+(q.level||'')).toLowerCase().includes(k)));
   if(sort==='diff')return [...list].sort((a:any,b:any)=>(b.difficulty||2)-(a.difficulty||2));
   if(sort==='type')return [...list].sort((a:any,b:any)=>String(a.type).localeCompare(String(b.type))||(b.difficulty||2)-(a.difficulty||2));
   return list;
- },[questions,search,typeFilter,starFilter,subjectFilter,levelFilter,sort]);
+ },[questions,search,typeFilter,starFilter,subjectFilter,levelFilter,sort,showAll]);
  const shown=filtered.slice(page*PAGE,page*PAGE+PAGE);
  const current=drawer?questions.find((q:any)=>q.id===drawer):null;
  const drawerIndex=current?filtered.findIndex((q:any)=>q.id===current.id):-1;
@@ -66,7 +68,7 @@ export default function QuestionBank({sessionId}:{sessionId:number}){
  function importNow(){try{const parsed=JSON.parse(text.replace(/^\uFEFF/,''));const items=Array.isArray(parsed)?parsed:parsed.items||[parsed];if(!items.length)return toast.error('题库不能为空');importingMutation.mutate(items.map((q:any)=>({...q,subject:q.subject||importSubject.trim(),level:q.level||importLevel.trim()})));}catch{toast.error('JSON 格式有误');}}
  function openAi(){setAiTab('agent');setAiError('');setAiOpen(true);}
  async function generate(){if(!aiForm.topic.trim())return toast.error('请填写出题范围');if(!Object.values(aiForm.types).some(Boolean))return toast.error('至少选择一种题型');setAiLoading(true);setAiError('');try{const result=await api('/api/questions/generate','POST',{topic:aiForm.topic,types:Object.keys(aiForm.types).filter(k=>aiForm.types[k]),count:aiForm.count,difficulty:aiForm.difficulty,extra:aiForm.extra,withTip:aiForm.withTip,skipDuplicates:aiForm.skipDuplicates},90000);setAiItems((result.items||[]).map((q:any)=>({...q,include:true})));const skipped=result.duplicates?`，跳过 ${result.duplicates} 道重复题`:'';toast.success(`生成 ${result.items.length} 题${skipped}`);}catch(e:any){setAiError(e.message);}finally{setAiLoading(false);}}
- const copy=async(value:string)=>{try{await navigator.clipboard.writeText(value);toast.success('已复制');return;}catch{}const ta=document.createElement('textarea');ta.value=value;ta.style.cssText='position:fixed;top:50%;left:50%;width:200px;height:60px;opacity:0.01;z-index:99999;';document.body.appendChild(ta);ta.focus();ta.select();let ok=false;try{ok=document.execCommand('copy');}catch{}document.body.removeChild(ta);if(ok)toast.success('已复制');else toast.error('复制失败，请手动复制');};
+ const copy=async(value:string)=>{const r=await copyText(value);if(r==='ok')toast.success('已复制');else if(r==='empty')toast.error('没有可复制的内容');else toast.error('复制失败，请手动选中文字复制');};
  const base=location.origin;
  const agentPrompt=`请给「题了个题」出 ${aiForm.count} 道题，范围：${aiForm.topic||'（填写出题范围）'}。\n只返回 JSON：{"items":[{"type":"single","q":"题干","a":["选项A","选项B"],"k":1,"difficulty":2,"tip":"解析"}]}\ntype 可用 single / multiple（correctIndices）/ boolean（a 固定 ["正确","错误"]，k 0 或 1）/ text（answers）/ subjective（modelAnswer、rubric）。\n难度 1-5，题干不要 HTML。`;
  const jsonPrompt=agentPrompt+`\n\n写好后再调用：POST ${base}/api/questions\n请求头：Content-Type: application/json、Authorization: Bearer <管理令牌>\n请求体：{"items":[题目数组]}`;
@@ -123,7 +125,7 @@ export default function QuestionBank({sessionId}:{sessionId:number}){
 
    {!shown.length&&<div className="p-12 text-center text-sm text-muted-foreground">{query.isLoading?'加载题库…':<>没有符合条件的题目。<button className="ml-1 underline underline-offset-4" onClick={()=>{setSearch('');setTypeFilter('all');setStarFilter('all');}}>清除筛选</button></>}</div>}
 
-   <div className="flex flex-wrap items-center gap-3 border-t px-3 py-2.5 text-xs text-muted-foreground"><span>共 <b className="text-foreground">{questions.length}</b> 题{filtered.length!==questions.length&&<> · 筛选出 <b className="text-foreground">{filtered.length}</b> 题</>}</span><div className="ml-auto flex items-center gap-1"><Button size="sm" variant="outline" disabled={page===0} onClick={()=>setPage(p=>p-1)}>上一页</Button><span className="min-w-14 text-center">{page+1} / {Math.max(1,Math.ceil(filtered.length/PAGE))}</span><Button size="sm" variant="outline" disabled={(page+1)*PAGE>=filtered.length} onClick={()=>setPage(p=>p+1)}>下一页</Button></div></div>
+   <div className="flex flex-wrap items-center gap-3 border-t px-3 py-2.5 text-xs text-muted-foreground"><span>共 <b className="text-foreground">{filtered.length}</b> 题{pausedCount>0&&!showAll&&<>（另有 {pausedCount} 题已暂停，点「全部（含已暂停）」查看）</>}</span><div className="ml-auto flex items-center gap-1"><Button size="sm" variant="outline" disabled={page===0} onClick={()=>setPage(p=>p-1)}>上一页</Button><span className="min-w-14 text-center">{page+1} / {Math.max(1,Math.ceil(filtered.length/PAGE))}</span><Button size="sm" variant="outline" disabled={(page+1)*PAGE>=filtered.length} onClick={()=>setPage(p=>p+1)}>下一页</Button></div></div>
   </div>
 
   {current&&<>

@@ -242,9 +242,10 @@
         if (result.status.reason) { lock(result.status.reason); toast('奖励已保存，达到可用时段后使用'); return; }
         show('lock'); $('lockTitle').textContent = '任务完成'; icon($('lockIcon'), 'check');
         $('lockDesc').textContent = '已解锁 ' + Math.round(result.rewardMinutes * 10) / 10 + ' 分钟'; $('lockNote').textContent = '';
-        $('lockActions').innerHTML = '<button class="btn btn-primary focusable" data-action="home">开始使用</button>';
+        $('lockActions').innerHTML = '<button class="btn btn-primary focusable" data-action="resume">开始使用</button>';
         focusDefault();
-        window.setTimeout(function () { if (state.screen === 'lock') nativeCall('exitToLauncher'); }, 2500);
+        // 解锁后回到解题前正在看的应用，不要跳回桌面（#68 / #74）
+        window.setTimeout(function () { if (state.screen === 'lock') nativeCall('resumePrevious'); }, 2500);
       } else { toast('本组未通过，再试一组'); start(); }
     } else { state.round = result.next; renderQuestion(); }
   }
@@ -384,7 +385,7 @@
           if (error) { toast(error); return; }
           var finished = state.review.result.finished && state.review.result.passed;
           state.reviewed = false;
-          if (finished && !result.status.reason && result.status.remainingSeconds > 0) nativeCall('exitToLauncher');
+          if (finished && !result.status.reason && result.status.remainingSeconds > 0) nativeCall('resumePrevious');
           else start();
         });
       case 'voice': return nativeCall('answerInput', [true]);
@@ -413,6 +414,7 @@
         });
       case 'return-learning': return nativeCall('backToQuiz');
       case 'home': return nativeCall('exitToLauncher');
+      case 'resume': return nativeCall('resumePrevious');
       case 'quiz': return state.screen === 'pair' ? nativeCall('backToQuiz') : start();
     }
   }
@@ -496,7 +498,9 @@
       });
     }, 2000);
   }
-  window.SOTV_INPUT = function (result) {
+  window.SOTV_INPUT = function (result, token) {
+    // 原生侧靠这个标记确认注入成功，失败会重试（部分电视 WebView 切回来时 JS 尚未就绪）
+    if (token) window.__sotvAck = token;
     if (!state.round) { window._pendingInput = result; return; }
     state.draft = { nonce: state.round.nonce, text: result.text || '', drawing: result.drawing || '' };
     window._pendingInput = null;

@@ -44,14 +44,20 @@ class ParentActivity : Activity() {
         column.addView(text(if (setup) "请设置 6–64 位密码。再次连接、打开管理面板和 API 都需要验证。" else "请输入管理密码", 15f, TvUi.muted(this)))
         val secret = EditText(this).apply {
             hint = if (changing) "新密码" else "管理密码"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            // 注意顺序：isSingleLine 内部会重设 inputType，必须放在最前面，
+            // 否则密码类型和遮罩都会被清掉，密码就明文显示了（issue #65）
             isSingleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            transformationMethod = android.text.method.PasswordTransformationMethod.getInstance()
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_NEXT or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
             TvUi.field(this)
         }
         column.addView(secret, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         val confirm = EditText(this).apply {
-            hint = "再次输入密码"; inputType = secret.inputType; isSingleLine = true
+            hint = "再次输入密码"
+            isSingleLine = true
+            inputType = secret.inputType
+            transformationMethod = android.text.method.PasswordTransformationMethod.getInstance()
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
             TvUi.field(this)
         }

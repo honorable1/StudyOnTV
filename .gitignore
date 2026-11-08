@@ -28,7 +28,13 @@ studyontv-release.jks
 
 /app/server/
 
-/parent-ui/
+/parent-ui/dist/
+/parent-ui/**/._*
+/parent-ui/public/assets/vendor/
+/parent-ui/public/assets/math.js
+/parent-ui/public/assets/analytics.js
+/parent-ui/public/assets/notices/*
+!/parent-ui/public/assets/notices/shadcn-admin.txt
 
 # Kotlin compiler cache
 .kotlin/
