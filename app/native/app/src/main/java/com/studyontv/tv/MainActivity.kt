@@ -1,7 +1,6 @@
 package com.studyontv.tv
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
@@ -24,7 +23,6 @@ open class MainActivity : Activity() {
             startActivity(Intent(this, OnboardingActivity::class.java)); finish(); return
         }
         DeviceRuntime.ensure(this)
-        checkCrashReport()   // 检测上次崩溃标记，有则弹窗
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (DeviceBridge.isTv(this)) requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         val reason = intent.getStringExtra("reason")
@@ -33,32 +31,8 @@ open class MainActivity : Activity() {
         GateService.start(this)
     }
 
-    /** 每次回到学习页都检查一次（6 小时内用缓存，不会频繁联网）；电视上 Activity 很少重建，只在 onCreate 检查会漏掉 */
-    private fun checkCrashReport() {
-        if (!CrashDetector.hasPending(this)) return
-        // 已经同意过的直接初始化并清标记，不再重复弹窗
-        if (Prefs.buglyConsent(this)) {
-            CrashDetector.clear(this)
-            BuglyInit.init(this)
-            return
-        }
-        val summary = CrashDetector.readAndClear(this)
-        AlertDialog.Builder(this)
-            .setTitle("🚨 上次运行时发生了崩溃")
-            .setMessage(
-                "是否允许上传崩溃日志帮助修复问题？\n\n" +
-                "包含：崩溃调用堆栈、设备型号、Android 版本、应用版本号\n" +
-                "不含：题库内容、管理密码、答题记录、局域网 IP\n\n" +
-                "日志将上传至腾讯 Bugly 服务器，可随时在「设置 → 崩溃报告」关闭。"
-            )
-            .setPositiveButton("提交日志") { _, _ ->
-                BuglyInit.initWithConsent(this)
-                android.widget.Toast.makeText(this, "已提交，感谢反馈！", android.widget.Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("不了") { _, _ -> /* 标记已在 readAndClear 里删除 */ }
-            .setCancelable(false)
-            .show()
-    }
+    // 崩溃只写本机日志（Diag → logs/sotv.log），不再弹窗、不上传。
+    // 家长可在面板「诊断」页查看或导出。
 
     private fun checkUpdate() {
         if (this is GateActivity) return

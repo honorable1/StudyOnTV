@@ -17,8 +17,6 @@ object DeviceRuntime {
         val app = context.applicationContext
         appContext = app
         Diag.installCrashHandler()
-        CrashDetector.install(app)   // 在 Diag handler 之后安装，确保我们的 handler 在最外层
-        BuglyInit.init(app)          // 用户已同意过则立即初始化，否则 no-op
         Diag.info("App", "start version=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) sdk=${android.os.Build.VERSION.SDK_INT} model=${android.os.Build.MODEL}")
         (app as android.app.Application).registerActivityLifecycleCallbacks(object : android.app.Application.ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: android.app.Activity) {

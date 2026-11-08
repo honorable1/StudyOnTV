@@ -87,8 +87,8 @@ android {
 }
 
 dependencies {
-    // Bugly 崩溃上报（用户同意后才初始化，见 BuglyInit.kt）
-    implementation(files("libs/bugly-crashreport.aar"))
+    // 不引第三方崩溃上报。崩溃堆栈由 Diag 写入本机 logs/sotv.log，
+    // 家长面板「诊断」页可查看、搜索、导出 zip，数据不出设备。
 }
 
 // 把网页和题库同步进 assets（仓库里只维护 app/web、admin、data/seed.json 三份源）

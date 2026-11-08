@@ -36,7 +36,7 @@
 import {createHash, createHmac} from 'node:crypto';
 import {createServer} from 'node:http';
 import {spawnSync} from 'node:child_process';
-import {copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync} from 'node:fs';
+import {copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync} from 'node:fs';
 import {basename, dirname, extname, join, normalize, resolve, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {networkInterfaces} from 'node:os';
@@ -104,8 +104,20 @@ if (!opts['no-build']) {
 
 // ---- 2. 收集 APK ----
 /** 用 aapt2 读出 APK 里真实写的版本，避免"清单写 0.3.20、包里是 0.3.19"这种最难查的错 */
+const sdkRoot = (() => {
+  const fromEnv = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+  if (fromEnv) return fromEnv;
+  // 环境变量没设时退回 local.properties 的 sdk.dir（Studio 会自动写）
+  for (const p of [join(root, 'app/native/local.properties'), join(root, 'local.properties')]) {
+    if (!existsSync(p)) continue;
+    const m = readFileSync(p, 'utf8').match(/^sdk\.dir\s*=\s*(.+)$/m);
+    if (m) return m[1].trim().replace(/\\:/g, ':').replace(/\\\\/g, '\\');
+  }
+  return null;
+})();
+
 function aapt2() {
-  const home = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+  const home = sdkRoot;
   if (!home) return null;
   const bt = join(home, 'build-tools');
   if (!existsSync(bt)) return null;
@@ -137,6 +149,13 @@ for (const f of flavors) {
   if (!existsSync(src)) throw new Error(`找不到产物：${src}（先去掉 --no-build 跑一次构建）`);
   const real = apkVersion(src);
   if (real) detected ??= real;
+  if (!real) {
+    // 读不出真实版本时，清单就只能靠推算值，等于把"清单说 25、包里是 24"的风险放回来
+    if (opts['no-build']) {
+      throw new Error('读不出 APK 里的版本号（找不到 aapt2）：请设置 ANDROID_HOME，或去掉 --no-build 让脚本自己构建一次');
+    }
+    console.warn('⚠️  读不出 APK 版本号（找不到 aapt2），清单按请求值写入，请自行核对包内版本。');
+  }
   if (real && (real.name !== version || real.code !== versionCode)) {
     console.warn(`⚠️  APK 实际是 v${real.name}(${real.code})，与请求的 v${version}(${versionCode}) 不一致，按 APK 实际值写清单。`);
     version = real.name;
@@ -152,6 +171,13 @@ for (const f of flavors) {
     size: statSync(src).size,
   };
   console.log(`✅ ${f}: ${fileName}  ${(assets[f].size / 1048576).toFixed(1)} MB`);
+}
+
+// 旧版本的包留在目录里会被穿透域名一起暴露，手动下载时也容易下错，只保留本次清单引用的
+const keep = new Set(Object.values(assets).map(a => a.name));
+for (const old of readdirSync(apkDir)) {
+  if (!/^StudyOnTV-.*\.apk$/i.test(old) || keep.has(old)) continue;
+  try { unlinkSync(join(apkDir, old)); console.log(`🧹 清理旧包 ${old}`); } catch (_) { }
 }
 
 // ---- 3. 局域网地址 ----

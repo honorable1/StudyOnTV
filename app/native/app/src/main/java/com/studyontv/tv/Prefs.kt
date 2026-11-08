@@ -49,10 +49,4 @@ object Prefs {
 
     fun serviceRunning(c: Context): Boolean = sp(c).getBoolean("service_running", false)
     fun setServiceRunning(c: Context, v: Boolean) = sp(c).edit().putBoolean("service_running", v).apply()
-
-    /** null = 未表态（尚未被问过）, true = 同意, false = 拒绝 */
-    fun buglyConsent(c: Context): Boolean = sp(c).getBoolean("bugly_consent", false)
-    fun setBuglyConsent(c: Context, v: Boolean) = sp(c).edit().putBoolean("bugly_consent", v).apply()
-    fun buglyConsentAsked(c: Context): Boolean = sp(c).getBoolean("bugly_consent_asked", false)
-    fun setBuglyConsentAsked(c: Context, v: Boolean) = sp(c).edit().putBoolean("bugly_consent_asked", v).apply()
 }

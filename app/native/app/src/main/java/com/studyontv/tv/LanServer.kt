@@ -489,7 +489,8 @@ class LanServer(
                     .put("uninstallProtected", UninstallGuard.active(context))
                     .put("autostart", Watchdog.report(context))
                     .put("monitor", GateService.diagnostics(context))
-                    .put("buglyConsent", Prefs.buglyConsent(context)))
+                    // 崩溃上报已移除，恒为 false；面板据此把开关渲染成关闭
+                    .put("buglyConsent", false))
                 return true
             }
             r.path == "/api/device" && r.method == "PUT" -> {
@@ -499,9 +500,11 @@ class LanServer(
                 json(r.out, 200, JSONObject().put("ok", true).put("name", name))
                 return true
             }
+            // 崩溃上报已移除：堆栈只写本机日志。保留该路由是为了让旧面板点了有明确回应，
+            // 而不是静默 404 —— 面板的开关按 buglyConsent 渲染，GET 恒返回 false。
             r.path == "/api/device/bugly" && r.method == "PUT" -> {
-                if (jsonObject(r.body).optBoolean("enabled")) BuglyInit.initWithConsent(context) else BuglyInit.revoke(context)
-                json(r.out, 200, JSONObject().put("ok", true).put("buglyConsent", Prefs.buglyConsent(context)))
+                json(r.out, 409, JSONObject().put("error", "not_supported")
+                    .put("message", "本版本不联网上报崩溃。崩溃日志保存在设备里，可在「诊断 → 导出日志」下载"))
                 return true
             }
             r.path == "/api/device/uninstall-guard" && r.method == "DELETE" -> {
