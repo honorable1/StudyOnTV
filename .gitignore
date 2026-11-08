@@ -34,3 +34,6 @@ studyontv-release.jks
 .kotlin/
 
 /release-artifacts/
+
+# 本分支自建更新源的产物（scripts/publish-local.mjs）
+/dist/

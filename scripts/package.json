@@ -9,6 +9,7 @@
   },
   "scripts": {
     "manifest": "node make-update-manifest.mjs",
+    "publish:local": "node publish-local.mjs",
     "shots": "node make-shots.mjs",
     "how-it-works": "node gen-how-it-works.mjs"
   }

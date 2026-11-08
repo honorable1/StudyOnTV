@@ -40,6 +40,37 @@ object Updater {
 
     fun api(ctx: Context): String = Prefs.updateApi(ctx)
 
+    /**
+     * 更新源地址白名单：https 一律允许；http 只允许本机/局域网。
+     *
+     * 面板自己就跑在 `http://192.168.x.x:8099`，家长自建的清单通常也放在局域网里，
+     * 硬要求 https 等于把这条路堵死（而给内网机器配证书并不现实）。
+     * http 的风险是同网段中间人可以替换响应，但下载完成后还有
+     * `ApkInstaller.validUpdate` 的「包名一致 + versionCode 更高 + 签名交集非空」三重校验，
+     * 被替换的包装不上。所以这里只限制地址范围，不强制加密。
+     */
+    fun isAllowedSource(raw: String): Boolean {
+        val url = try { URL(raw.trim()) } catch (_: Exception) { return false }
+        return when (url.protocol?.lowercase()) {
+            "https" -> true
+            "http" -> isPrivateHost(url.host.orEmpty().lowercase())
+            else -> false
+        }
+    }
+
+    /** IPv4 私有网段 + 本机回环 + mDNS 名字；其它（含公网域名）一律不放行 */
+    private fun isPrivateHost(host: String): Boolean {
+        if (host == "localhost" || host == "::1" || host.endsWith(".local") ||
+            host.endsWith(".lan") || host.endsWith(".home.arpa")) return true
+        val parts = host.split(".")
+        if (parts.size != 4) return false
+        val n = parts.map { it.toIntOrNull() ?: return false }
+        if (n.any { it !in 0..255 }) return false
+        return n[0] == 127 || n[0] == 10 ||
+            (n[0] == 192 && n[1] == 168) ||
+            (n[0] == 172 && n[1] in 16..31)
+    }
+
     fun mirrors(ctx: Context): List<String> {
         val saved = Prefs.updateMirrors(ctx) ?: return DEFAULT_MIRRORS
         return saved.split('\n', ',', ' ').map { it.trim() }.filter { it.startsWith("https://") }
@@ -205,7 +236,7 @@ object Updater {
         val version = manifest.optString("version").removePrefix("v").trim()
         if (version.isEmpty()) return null
         val asset = manifest.optJSONObject("assets")?.optJSONObject(if (BuildConfig.FLAVOR == "tv") "tv" else "mobile") ?: return null
-        val url = asset.optString("url").takeIf { it.startsWith("https://") } ?: return null
+        val url = asset.optString("url").takeIf { isAllowedSource(it) } ?: return null
         val notes = manifest.optString("notes")
         val force = manifest.optBoolean("force") || notes.contains("[force]", true)
         return Info(version, current, force && isNewer(version, current), notes.trim(), url, asset.optString("sha256").lowercase(), source)
@@ -250,7 +281,9 @@ object Updater {
     fun saveSettings(ctx: Context, input: JSONObject): JSONObject {
         if (input.has("api")) {
             val api = input.optString("api").trim()
-            require(api.isEmpty() || api.startsWith("https://")) { "自定义更新地址需要以 https:// 开头" }
+            require(api.isEmpty() || isAllowedSource(api)) {
+                "更新地址需为 https://，或局域网地址（如 http://192.168.1.10:8787/update.json）"
+            }
             Prefs.setUpdateApi(ctx, api)
         }
         if (input.has("mirrors")) {

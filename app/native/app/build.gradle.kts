@@ -10,6 +10,16 @@ val localProps = Properties().also { props ->
     if (f.exists()) props.load(f.inputStream())
 }
 
+// 版本号可由外部覆盖，用于本分支自建更新源（scripts/publish-local.mjs 会自动算好两个值）：
+//   ./gradlew :app:assembleMobileDebug -PsotvVersionName=0.3.20-dev.1 -PsotvVersionCode=25
+// 也可以写进根目录 local.properties 的 VERSION_NAME / VERSION_CODE。
+// 注意 versionCode 必须一起加：ApkInstaller 用 versionCode 判断"是否比当前新"，
+// 只改 versionName 会被判定为不比当前新而拒绝安装。
+val versionNameOverride: String? =
+    providers.gradleProperty("sotvVersionName").orNull ?: localProps.getProperty("VERSION_NAME")
+val versionCodeOverride: Int? =
+    (providers.gradleProperty("sotvVersionCode").orNull ?: localProps.getProperty("VERSION_CODE"))?.toIntOrNull()
+
 android {
     namespace = "com.studyontv.tv"
     compileSdk = 36
@@ -18,8 +28,8 @@ android {
         applicationId = "com.studyontv.tv"
         minSdk = 21          // Android 5.0
         targetSdk = 34
-        versionCode = 24
-        versionName = "0.3.19"
+        versionCode = versionCodeOverride ?: 24
+        versionName = versionNameOverride ?: "0.3.19"
     }
 
     flavorDimensions += "device"
