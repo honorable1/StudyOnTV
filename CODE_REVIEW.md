@@ -494,3 +494,22 @@ if (path.startsWith("/api/")) return json(out, 404, err("not_found"))
 ---
 
 *本报告基于 `feature/dev` 分支 `af1bbf7` 阅读源码得出，未做动态验证。行号以该提交为准。*
+
+---
+
+## 修复状态（2026-11-08 更新）
+
+P0 / P1 / P2 全部 21 项、P3 12/13 项已在 `feature/dev` 上落地，逐项验证记录见提交说明。
+
+| 批次 | 提交 | 内容 |
+|---|---|---|
+| P0-P2 | `2e84afd` | 21 项全部修复（详见提交说明；含新增 `Net.kt`、`auth-secure.js`） |
+| 上游合并 | `1f491fb` | 合并 `v0.3.19`；保留「时段判定前置于免费额度」，采纳上游组数语义与新包 |
+| P3 第一批 | `db05c69` | 静默 catch、`activate()` 改 switch、`exempt()` 精确白名单、会话定时清理、`Json.kt`、`config()` 版本号缓存、`scripts/package.json` |
+| P3 第二批 | `de8aaf2` | `route()` 240 行 `when` → 9 个按域处理器 + `Req` 参数对象 |
+| P3 第三批 | `9689987` | 拆出 `StoreSchema`（建表/迁移）与 `WeekSlots`（7×48 时段） |
+| P3 第四批 | `9c2689a` | `LocalStore` 467→106 行，拆为 `ConfigStore` / `QuestionsDao` / `UsageLog` / `ProgressStore`，原方法签名保留为门面 |
+
+**未处理 1 项**：`admin/assets/index-*.js` 无可读源码。上游 v0.3.19 放出了 `parent-ui/src/` 下 3 个 tsx，但缺 `./api`、`./schema`、`./WeekSchedule`、8 个 shadcn 组件与全部构建脚手架，不足以构成可构建工程，故登录逻辑仍以 `admin/assets/auth-secure.js` 垫片形式存在。等上游补齐 `api.ts` 后可把 SHA-256/HMAC 搬进源码并删除垫片。
+
+**验证**：`tv` / `mobile` 两个 flavor 均 `BUILD SUCCESSFUL`，仅剩既存的 `Notification.Builder` 等弃用警告；无 JVM 单测与真机动态验证（本机无测试基础设施）。
