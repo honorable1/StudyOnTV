@@ -67,16 +67,19 @@ class GateService : Service() {
         val active = awake && monitoring && if (pkg == null) canOverlay else !exempt(pkg)
         val protecting = awake && monitoring && if (pkg == null) canOverlay else !exempt(pkg, false)
         val reason = status.getString("reason")
-        // 解锁 / 任务完成后确保释放所有音频持有者，避免悬浮页收起后仍残留静音或音频焦点。
-        if (!free && !hasGate() && reason.isEmpty() && DeviceRuntime.store.get("review_feedback").isEmpty() &&
-            DeviceRuntime.store.config().optString("playMode") != "practice" && MediaPause.active) MediaPause.releaseAll(this)
-        val settingsBlocked = awake && monitoring && !free && pkg != null && isSettings(pkg) &&
-            DeviceRuntime.store.config().optBoolean("blockSettingsDuringControl", true) && !AdminAuth.recentlyVerified()
-        val gateReason = if (settingsBlocked) "settings" else reason
+        // 这个方法每秒跑一次，config() 与 get() 都各自只取一次，避免同一 tick 内重复查库
+        val c = DeviceRuntime.store.config()
         val pendingFeedback = DeviceRuntime.store.get("review_feedback").isNotEmpty()
+        val practice = c.optString("playMode") == "practice"
+        // 解锁 / 任务完成后确保释放所有音频持有者，避免悬浮页收起后仍残留静音或音频焦点。
+        if (!free && !hasGate() && reason.isEmpty() && !pendingFeedback &&
+            !practice && MediaPause.active) MediaPause.releaseAll(this)
+        val settingsBlocked = awake && monitoring && !free && pkg != null && isSettings(pkg) &&
+            c.optBoolean("blockSettingsDuringControl", true) && !AdminAuth.recentlyVerified()
+        val gateReason = if (settingsBlocked) "settings" else reason
         val feedbackVisible = !free && hasGate() && pendingFeedback
         if (!free) Foreground.learningActivity()?.let {
-            if (reason.isNotEmpty() || pendingFeedback || DeviceRuntime.store.config().optString("playMode") == "practice") MediaPause.pause(it)
+            if (reason.isNotEmpty() || pendingFeedback || practice) MediaPause.pause(it)
             else MediaPause.release(it)
         }
         wasUsing = active && !free && reason.isEmpty() && !feedbackVisible
