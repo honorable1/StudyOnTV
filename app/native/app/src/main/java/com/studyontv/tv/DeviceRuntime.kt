@@ -42,6 +42,8 @@ object DeviceRuntime {
             val pending = store.reviews("pending")
             for (i in 0 until pending.length()) GradingService.enqueue(store, learning, pending.getJSONObject(i).getString("id"))
         }
+        // 已开启「阅读联动」时恢复轮询；没开就什么都不做（默认关闭，行为与改造前一致）
+        runCatching { CloudLink.start() }.onFailure { Diag.warn("Cloud", "恢复轮询失败：" + it.message) }
     }
 
     fun connection(context: Context): org.json.JSONObject {

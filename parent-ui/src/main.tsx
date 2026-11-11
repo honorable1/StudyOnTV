@@ -1,7 +1,7 @@
 import {useEffect,useState,lazy,Suspense,type ReactNode} from 'react';
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider,useQuery} from '@tanstack/react-query';
-import {BookOpen,ClipboardCheck,SlidersHorizontal,ChartColumn,Leaf,LogOut,ArrowRight,LockKeyhole,Monitor,Gamepad2,Wifi,Settings,Sun,Moon,Laptop,ChevronsUpDown,Tv,Palette,KeyRound,CloudDownload,RadioTower,FileText,Bot,Eye,EyeOff} from 'lucide-react';
+import {BookOpen,ClipboardCheck,SlidersHorizontal,ChartColumn,Leaf,LogOut,ArrowRight,LockKeyhole,Monitor,Gamepad2,Wifi,Settings,Sun,Moon,Laptop,ChevronsUpDown,Tv,Palette,KeyRound,CloudDownload,RadioTower,Cloud,FileText,Bot,Eye,EyeOff} from 'lucide-react';
 import {Toaster,toast} from 'sonner';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
@@ -20,6 +20,7 @@ import GradingPage from './GradingPage';
 import DevicePanel from './DevicePanel';
 import LogsPage from './LogsPage';
 import AiSettings from './AiSettings';
+import CloudPage from './CloudPage';
 import FeedbackPanel from './FeedbackPanel';
 const RecordsPage=lazy(()=>import('./RecordsPage'));
 import './styles.css';
@@ -34,8 +35,8 @@ const pages:{id:PageId,title:string,short:string,icon:any,description:string}[]=
  {id:'rules',title:'学习计划',short:'计划',icon:SlidersHorizontal,description:'任务、时段、范围与奖励'},
  {id:'records',title:'成长记录',short:'记录',icon:ChartColumn,description:'使用时间与学习进度'},
  {id:'settings',title:'设置',short:'设置',icon:Settings,description:'设备、外观、更新与安全'}];
-type SectionId='device'|'display'|'update'|'security'|'integration'|'logs'|'ai';
-const sections:{id:SectionId,title:string,icon:any}[]=[{id:'device',title:'设备',icon:Tv},{id:'display',title:'界面与反馈',icon:Palette},{id:'update',title:'版本更新',icon:CloudDownload},{id:'security',title:'管理密码',icon:KeyRound},{id:'integration',title:'家庭自动化',icon:RadioTower},{id:'logs',title:'诊断日志',icon:FileText},{id:'ai',title:'模型 API（高级）',icon:Bot}];
+type SectionId='device'|'display'|'update'|'security'|'integration'|'cloud'|'logs'|'ai';
+const sections:{id:SectionId,title:string,icon:any}[]=[{id:'device',title:'设备',icon:Tv},{id:'display',title:'界面与反馈',icon:Palette},{id:'update',title:'版本更新',icon:CloudDownload},{id:'security',title:'管理密码',icon:KeyRound},{id:'integration',title:'家庭自动化',icon:RadioTower},{id:'cloud',title:'阅读联动',icon:Cloud},{id:'logs',title:'诊断日志',icon:FileText},{id:'ai',title:'模型 API（高级）',icon:Bot}];
 
 /* ---------- 记住登录：保存在本机浏览器，30 天有效；修改管理密码或断开连接后失效 ---------- */
 const SESSION_KEY='sotv-panel-session';
@@ -96,7 +97,7 @@ function BottomNav({page,go,pending}:{page:PageId,go:(p:PageId)=>void,pending:nu
 function SettingsPage({section,go,sessionId,state,logout}:{section:SectionId,go:(p:PageId,s:SectionId)=>void,sessionId:number,state:any,logout:()=>void}){
  return <div className="flex flex-col gap-4 lg:flex-row lg:gap-10">
   <aside className="lg:w-52 shrink-0 lg:sticky lg:top-20 self-start w-full"><nav className="flex gap-1 overflow-x-auto no-scrollbar lg:flex-col -mx-1 px-1">{sections.map(s=><Button key={s.id} variant={section===s.id?'secondary':'ghost'} className="justify-start shrink-0" onClick={()=>go('settings',s.id)}><s.icon/>{s.title}</Button>)}</nav></aside>
-  <div className="min-w-0 flex-1 max-w-3xl">{section==='display'?<FeedbackPanel state={state} sessionId={sessionId}/>:section==='logs'?<LogsPage sessionId={sessionId}/>:section==='ai'?<AiSettings sessionId={sessionId}/>:<DevicePanel sessionId={sessionId} only={section} onPasswordChanged={logout}/>}</div>
+  <div className="min-w-0 flex-1 max-w-3xl">{section==='display'?<FeedbackPanel state={state} sessionId={sessionId}/>:section==='cloud'?<CloudPage sessionId={sessionId}/>:section==='logs'?<LogsPage sessionId={sessionId}/>:section==='ai'?<AiSettings sessionId={sessionId}/>:<DevicePanel sessionId={sessionId} only={section as 'device'|'update'|'security'|'integration'} onPasswordChanged={logout}/>}</div>
  </div>}
 
 function Dashboard({sessionId,logout,theme}:{sessionId:number,logout:()=>void,theme:ReturnType<typeof useTheme>}){

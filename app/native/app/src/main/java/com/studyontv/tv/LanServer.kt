@@ -327,6 +327,41 @@ class LanServer(
                 json(r.out, 200, JSONObject().put("learning", status))
                 return true
             }
+            // ---- 阅读联动（云端）：只有家长能开关与配对，集成令牌/设备令牌都不行 ----
+            r.path == "/api/cloud" && r.method == "GET" -> {
+                if (!r.parent) { json(r.out, 403, err("forbidden").put("message", "请先用管理密码登录")); return true }
+                json(r.out, 200, CloudLink.status()); return true
+            }
+            r.path == "/api/cloud" && r.method == "PUT" -> {
+                if (!r.parent) { json(r.out, 403, err("forbidden").put("message", "请先用管理密码登录")); return true }
+                val input = jsonObject(r.body)
+                val base = input.optString("base").trim()
+                if (base.isNotEmpty()) {
+                    // 只接受 http(s)://，避免把任意串塞进 URL()
+                    require(base.startsWith("http://") || base.startsWith("https://")) { "接口地址需要以 http:// 或 https:// 开头" }
+                    store.set("cloud_base", base.trimEnd('/'))
+                }
+                if (input.has("enabled")) {
+                    CloudLink.setEnabled(input.optBoolean("enabled"))
+                }
+                json(r.out, 200, CloudLink.status()); return true
+            }
+            r.path == "/api/cloud/bind" && r.method == "POST" -> {
+                if (!r.parent) { json(r.out, 403, err("forbidden").put("message", "请先用管理密码登录")); return true }
+                val input = jsonObject(r.body)
+                json(r.out, 200, CloudLink.bind(input.optString("code"), input.optString("base")))
+                return true
+            }
+            r.path == "/api/cloud" && r.method == "DELETE" -> {
+                if (!r.parent) { json(r.out, 403, err("forbidden").put("message", "请先用管理密码登录")); return true }
+                CloudLink.unbind(); json(r.out, 200, CloudLink.status()); return true
+            }
+            r.path == "/api/cloud/pull" && r.method == "POST" -> {
+                if (!r.parent) { json(r.out, 403, err("forbidden").put("message", "请先用管理密码登录")); return true }
+                val pulled = CloudLink.pull()
+                json(r.out, 200, JSONObject().put("pulled", pulled).put("cloud", CloudLink.status()))
+                return true
+            }
         }
         return false
     }

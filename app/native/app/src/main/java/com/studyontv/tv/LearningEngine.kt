@@ -19,6 +19,8 @@ class LearningEngine(private val store: LocalStore) {
     private var pendingCredit = 0L      // 已扣减、尚未写进 credit_ms
     private var pendingUsed = 0L        // 已增加、尚未写进 used_ms
     private var pendingFree = 0L        // 已消耗、尚未写进 free_quota_ms
+    private var pendingExt = 0L         // 已消耗、尚未写进 ext_ms（云端联动额度）
+    private var pendingExtUsed = 0L     // 云端额度累计消耗，供上报对账（只统计"买来的分钟"）
     private var pendingUsageMs = 0L     // 尚未写进 events 的用量
     private var lastPersistAt = 0L
 
@@ -26,9 +28,19 @@ class LearningEngine(private val store: LocalStore) {
     private fun usedMs() = number("used_ms") + pendingUsed
     private fun freeQuotaMs() = (number("free_quota_ms") - pendingFree).coerceAtLeast(0)
 
+    /**
+     * 云端联动额度：家长在「阅读时长记录」里兑换出来的分钟数，由电视主动拉取入账。
+     *
+     * **与 credit_ms 的关键差异**：`ext_ms` 不在 [day] 里清零、也不受 `dailyMinutes`
+     * 约束 —— 它是家长已经买好的票，今天看不完明天接着看。每日上限仍然管住
+     * 「答题赚来的部分」，两条额度互不侵占。
+     */
+    private fun extMs() = (number("ext_ms") - pendingExt).coerceAtLeast(0)
+
     @Synchronized
     private fun persistPending() {
-        if (pendingCredit == 0L && pendingUsed == 0L && pendingFree == 0L && pendingUsageMs == 0L) return
+        if (pendingCredit == 0L && pendingUsed == 0L && pendingFree == 0L
+            && pendingExt == 0L && pendingUsageMs == 0L) return
         val db = store.writableDatabase
         db.beginTransaction()
         try {
@@ -43,6 +55,14 @@ class LearningEngine(private val store: LocalStore) {
             if (pendingFree != 0L) {
                 val value = (number("free_quota_ms") - pendingFree).coerceAtLeast(0); pendingFree = 0
                 store.set("free_quota_ms", value.toString())
+            }
+            if (pendingExt != 0L) {
+                val value = (number("ext_ms") - pendingExt).coerceAtLeast(0); pendingExt = 0
+                store.set("ext_ms", value.toString())
+            }
+            if (pendingExtUsed != 0L) {
+                val value = number("ext_used_ms") + pendingExtUsed; pendingExtUsed = 0
+                store.set("ext_used_ms", value.toString())
             }
             if (pendingUsageMs > 0) {
                 val ms = pendingUsageMs; pendingUsageMs = 0
@@ -68,6 +88,7 @@ class LearningEngine(private val store: LocalStore) {
             // 每天重置时，把"默认免费时长"存入 free_quota_ms（和答题奖励分开记）
             val freeMin = store.config().optLong("dailyFreeMinutes", 0L)
             put("free_quota_ms", freeMin * 60000L)
+            // ext_ms 故意不清零：那是家长用读书时长换来的额度，跨天继续有效（见 extMs 注释）
         }
     }
 
@@ -202,6 +223,7 @@ class LearningEngine(private val store: LocalStore) {
         val o = override()
         val free = freeNow(c)
         val freeQuota = freeQuotaMs()
+        val extQuota = extMs()
         val inAllowedWindow = c.optBoolean("allDay") || inWindow(c)
         // 顺序很重要：时段判定必须在「免费额度」之前，否则配了每日免费时长就等于取消了全部时段管控
         val reason = when {
@@ -209,6 +231,7 @@ class LearningEngine(private val store: LocalStore) {
             free -> ""
             c.optString("scheduleMode", "allow") != "control" && !inAllowedWindow -> "schedule"
             freeQuota > 0 -> ""   // 每日默认免费时长还有余额，放行
+            extQuota > 0 -> ""    // 云端联动额度还有余额：这是家长用读书时长换来的，不受每日上限约束
             used >= c.getLong("dailyMinutes") * 60000 -> "quota"
             remaining <= 0 && rounds >= c.getInt("roundsPerDay") -> "rounds"
             // 已达组数上限：用完最后一组的奖励时间再锁，但不再允许继续答题卷得更多时间
@@ -218,10 +241,11 @@ class LearningEngine(private val store: LocalStore) {
         }
         val nextAt = if (reason == "locked") o?.optLong("until") ?: 0L
             else if (reason in listOf("quota", "rounds", "schedule")) nextAvailable(c, reason != "schedule") else 0L
-        return JSONObject().put("remainingSeconds", remaining / 1000).put("usedMinutes", used / 60000.0)
+        return JSONObject().put("remainingSeconds", (remaining + extQuota) / 1000).put("usedMinutes", used / 60000.0)
             .put("extraPool", number("extra_pool")).put("wrongProgress", number("wrong_progress"))
             .put("nextAvailableAt", nextAt).put("free", free)
             .put("freeQuotaSeconds", freeQuota / 1000)
+            .put("extSeconds", extQuota / 1000)
             .put("roundsDoneToday", rounds).put("reason", reason).put("override", o ?: JSONObject.NULL).put("awaitingReview", active()?.has("pendingReview") == true)
     }
 
@@ -235,7 +259,8 @@ class LearningEngine(private val store: LocalStore) {
         if (step <= 0) return
         val cap = c.getLong("dailyMinutes") * 60000
         var room = (cap - usedMs()).coerceAtLeast(0)
-        if (room <= 0) { persistPending(); return }
+        // 每日上限用尽但云端额度还有 → 继续放行（家长已为这部分时间付过读书时长）
+        if (room <= 0 && extMs() <= 0) { persistPending(); return }
         // 每日默认免费时长：先消耗，但同样不能突破家长设定的每日总时长
         val freeQuotaNow = freeQuotaMs()
         if (freeQuotaNow > 0) {
@@ -246,6 +271,15 @@ class LearningEngine(private val store: LocalStore) {
             if (freeQuotaNow - freeConsumed <= 0 || room - freeConsumed <= 0) persistPending() else persistIfDue()
             return
         }
+        // 云端联动额度：不受 dailyMinutes 约束，优先级高于答题余额
+        val extNow = extMs()
+        if (extNow > 0) {
+            val extConsumed = min(step, extNow)
+            pendingExt += extConsumed; pendingExtUsed += extConsumed
+            pendingUsed += extConsumed; pendingUsageMs += extConsumed
+            if (extNow - extConsumed <= 0) persistPending() else persistIfDue()
+            return
+        }
         val amount = min(step, min(creditMs(), room))
         if (amount <= 0) { persistPending(); return }
         pendingCredit += amount; pendingUsed += amount; pendingUsageMs += amount
@@ -254,6 +288,33 @@ class LearningEngine(private val store: LocalStore) {
 
     @Synchronized
     fun flushUsage() { persistPending() }
+
+    /** 今日已看毫秒（含尚未落盘的增量），供云端上报对账用。 */
+    @Synchronized
+    fun usedMsSnapshot(): Long { day(); return usedMs() }
+
+    /** 累计消耗的「云端额度」毫秒数 —— 上报只报这个，别把免费时长记到家长账上。 */
+    @Synchronized
+    fun extUsedMsSnapshot(): Long { day(); return number("ext_used_ms") + pendingExtUsed }
+
+    /**
+     * 云端入账：把家长兑换出来的分钟数放进 ext 额度池。
+     *
+     * **按 seq 幂等**：只有比上次处理过的 seq 更大才入账。回执丢了、电视被重装、
+     * 同一张券被重复下发，都不会重复加时间 —— 这是整条链路唯一需要的去重依据，
+     * 不看时间戳（系统时间可以被孩子改）。
+     */
+    @Synchronized
+    fun grant(minutes: Int, seq: Long): JSONObject {
+        require(minutes in 1..24 * 60) { "入账分钟数不正确" }
+        if (seq <= number("ext_seq")) return status().put("applied", false)
+        flushUsage()
+        put("ext_ms", number("ext_ms") + minutes * 60000L)
+        put("ext_seq", seq)
+        store.logEvent("cloud_grant", JSONObject().put("seq", seq).put("minutes", minutes))
+        Diag.info("Cloud", "入账 seq=$seq +${minutes}min，池内共 ${extMs() / 60000} 分钟")
+        return status().put("applied", true)
+    }
 
     private fun active(): JSONObject? = store.get("active_round").takeIf { it.isNotEmpty() }?.let {
         try { JSONObject(it) } catch (_: Exception) { null }
