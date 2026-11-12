@@ -58,6 +58,8 @@ class ConfigStore(private val store: LocalStore) {
 
     private fun buildConfig(raw: String): JSONObject {
         val defaults = JSONObject().put("dailyMinutes", 40).put("dailyFreeMinutes", 0).put("sessionMinutes", 10)
+            // 剩余时间角标从剩下几分钟开始提示（0 = 不显示角标）
+            .put("countdownShowMinutes", 3)
             .put("questionsPerRound", 5).put("roundsPerDay", 3).put("passRatio", 0.6)
             .put("windowStart", "18:30").put("windowEnd", "20:00").put("allDay", true).put("spacedRepetitionEnabled", false)
             .put("playMode", "round").put("extraEnabled", true)
@@ -97,6 +99,7 @@ class ConfigStore(private val store: LocalStore) {
         // config() 返回的是缓存实例，这里要复制一份再改，避免污染缓存
         val next = JSONObject(config().toString())
         val ranges = mapOf("dailyMinutes" to 1..480, "dailyFreeMinutes" to 0..120, "sessionMinutes" to 1..120,
+            "countdownShowMinutes" to 0..120,
             "questionsPerRound" to 1..100, "roundsPerDay" to 1..100,
             "wrongThreshold" to 1..100, "extraQuestions" to 1..100)
         ranges.forEach { (key, range) ->

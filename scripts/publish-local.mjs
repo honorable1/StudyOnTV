@@ -18,6 +18,7 @@
  *   node scripts/publish-local.mjs --push http://192.168.31.174:8099 --password 'xx' --clear --no-build --no-serve
  *
  * 选项：
+ *   --approved                审核已通过，才允许写 dist / 生成清单 / 推送设备；不加只构建
  *   --flavor mobile|tv|both   默认 both
  *   --version x.y.z[-tag]     默认 <build.gradle.kts 里的版本>-dev.1
  *   --code N                  默认 build.gradle.kts 里的 versionCode + 1
@@ -73,8 +74,8 @@ let version = String(opts.version ?? `${baseVersion}-dev.1`).replace(/^v/, '');
 if (!/^\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$/.test(version)) throw new Error(`版本号格式不对：${version}`);
 let versionCode = Number(opts.code ?? baseCode + 1);
 if (!Number.isInteger(versionCode) || versionCode <= 0) throw new Error(`versionCode 不对：${opts.code}`);
-if (versionCode <= baseCode) {
-  console.warn(`⚠️  versionCode ${versionCode} 不大于仓库里的 ${baseCode}，设备会判定"不比当前新"并拒绝安装。`);
+if (versionCode < baseCode) {
+  console.warn(`⚠️  versionCode ${versionCode} 低于仓库里的 ${baseCode}，设备会判定"不比当前新"并拒绝安装。`);
 }
 
 const flavors = (opts.flavor ?? 'both') === 'both' ? ['tv', 'mobile'] : [String(opts.flavor)];
@@ -100,6 +101,17 @@ if (!opts['no-build']) {
     console.error('\n构建失败。常见原因：JAVA_HOME 没指向 JDK 17（Gradle 8.13 不支持 JDK 25）。');
     process.exit(r.status ?? 1);
   }
+}
+
+// ---- 审核门禁：打包可以随便打，发布必须人工放行 ----
+// 本项目规定「先打包 → 人工审核 → 再发布」。没有 --approved 时只构建、不写 dist，
+// 免得还没看过的新包被设备当成更新装上去。
+if (!opts.approved) {
+  console.error('\n⏸  未加 --approved：本次只构建，不写 dist、不生成 update.json、不推送设备。');
+  console.error('   构建产物：app/native/app/build/outputs/apk/{tv,mobile}/debug/');
+  console.error('   审核通过后复用同一个包发布（不要让设备装到和审核时不同的文件）：');
+  console.error('     node scripts/publish-local.mjs --approved --no-build --version <同审核版本> --code <同版本号> --base <域名>');
+  process.exit(2);
 }
 
 // ---- 2. 收集 APK ----

@@ -125,15 +125,21 @@ class GateService : Service() {
                 }
             }
         }
-        updateCountdown(status, active, free, canOverlay)
+        updateCountdown(status, active, free, canOverlay, c)
     }
 
-    /** 看电视期间在画面右上角显示剩余分钟数；不在看电视 / 拦截中 / 自由时段 / 家长解锁时隐藏 */
-    private fun updateCountdown(status: org.json.JSONObject, active: Boolean, free: Boolean, canOverlay: Boolean) {
+    /**
+     * 看电视期间在画面右上角显示剩余分钟数；不在看电视 / 拦截中 / 自由时段 / 家长解锁时隐藏。
+     * 只有剩余时间进入家长设置的 `countdownShowMinutes`（默认 3 分钟）后才出现。
+     */
+    private fun updateCountdown(
+        status: org.json.JSONObject, active: Boolean, free: Boolean, canOverlay: Boolean,
+        config: org.json.JSONObject,
+    ) {
         val seconds = status.optLong("remainingSeconds") + status.optLong("freeQuotaSeconds")
         val show = canOverlay && active && !free && status.optString("reason").isEmpty() &&
             status.optJSONObject("override") == null && seconds > 0 && !hasGate()
-        if (show) countdown.update(seconds) else countdown.hide()
+        if (show) countdown.update(seconds, config.optInt("countdownShowMinutes", 3)) else countdown.hide()
     }
 
     private fun updateAnchor(allowed: Boolean) {

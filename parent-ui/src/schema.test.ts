@@ -12,4 +12,9 @@ const overnight=segments(false,'22:00','06:00');
 assert.equal(overnight.length,2);
 assert.ok(Math.abs(overnight.reduce((sum,s)=>sum+s.width,0)-100/3)<1e-8);
 assert.equal(ruleSchema.safeParse({...defaults,questionsPerRound:NaN}).success,false);
-console.log('PASS blank times, explicit all-day, equal endpoints, invalid hours, overnight windows and cleared numbers');
+// 剩余时间角标阈值：默认 3 分钟，0 表示关闭，超出 0–120 视为非法
+assert.equal(defaults.countdownShowMinutes,3);
+assert.equal(ruleSchema.safeParse({...defaults,countdownShowMinutes:0}).success,true);
+assert.equal(ruleSchema.safeParse({...defaults,countdownShowMinutes:-1}).success,false);
+assert.equal(ruleSchema.safeParse({...defaults,countdownShowMinutes:121}).success,false);
+console.log('PASS blank times, explicit all-day, equal endpoints, invalid hours, overnight windows, cleared numbers and countdown threshold');

@@ -11,6 +11,7 @@ import android.widget.TextView
 
 /**
  * 看电视期间右上角显示的剩余时间角标：只显示分钟，最后 1 分钟闪烁提醒。
+ * 只有剩余时间进入家长设定的分钟数（默认 3 分钟）后才出现，避免整场都在看倒计时。
  * 纯展示（FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCHABLE，不吃遥控器按键、不挡触摸），
  * 由 GateService 的每秒 tick 驱动；答题页自身不显示（它有自己的顶部胶囊）。
  */
@@ -46,9 +47,13 @@ class CountdownOverlay(private val context: Context) {
         }
     }
 
-    /** seconds：剩余总秒数（答题余额 + 每日免费时长余额）。<=0 时自动隐藏。 */
-    fun update(seconds: Long) {
-        if (seconds <= 0) { hide(); return }
+    /**
+     * seconds：剩余总秒数（答题余额 + 每日免费时长余额）。
+     * showUnderMinutes：剩余多少分钟内才显示，<=0 表示家长关掉了角标。
+     * 未到阈值时自动隐藏，不占用画面。
+     */
+    fun update(seconds: Long, showUnderMinutes: Int) {
+        if (seconds <= 0 || showUnderMinutes <= 0 || seconds > showUnderMinutes * 60L) { hide(); return }
         val urgent = seconds <= 60
         val chip = chip()
         chip.text = "剩余 ${(seconds + 59) / 60} 分钟"
